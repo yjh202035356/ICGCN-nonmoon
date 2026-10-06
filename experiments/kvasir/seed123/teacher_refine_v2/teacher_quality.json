@@ -1,0 +1,17 @@
+{
+  "n_images": 100,
+  "original_soft_dice": 0.2936398737505078,
+  "refined_soft_dice": 0.3226695881038904,
+  "soft_dice_gain": 0.029029714353382585,
+  "original_binary_dice": 0.379514291039732,
+  "refined_binary_dice": 0.4612309487017668,
+  "binary_dice_gain": 0.08171665766203479,
+  "original_iou": 0.24645133166580335,
+  "refined_iou": 0.3250948075431264,
+  "original_mae": 0.2816385516524315,
+  "refined_mae": 0.27740816116333006,
+  "mae_reduction": 0.004230390489101454,
+  "mean_refine_delta": 0.03743353914469481,
+  "soft_dice_improved_fraction": 0.89,
+  "mae_improved_fraction": 0.66
+}

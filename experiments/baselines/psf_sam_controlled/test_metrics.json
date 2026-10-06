@@ -1,0 +1,6 @@
+{
+  "n_images": 200,
+  "checkpoint_epoch": 30,
+  "foreground_dice": 0.9054421488391009,
+  "foreground_iou": 0.8525419529990463
+}

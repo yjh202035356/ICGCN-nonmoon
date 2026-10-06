@@ -1,0 +1,15 @@
+{
+  "n_images": 200,
+  "semantic_dice": 0.8349135514749885,
+  "structural_dice": 0.8467887401720919,
+  "naive_average_dice": 0.8691623861396428,
+  "resolver_fused_dice": 0.8675204818166213,
+  "oracle_dice": 0.9256963414653318,
+  "resolver_gain_vs_best_head": 0.0207317416445294,
+  "resolver_gain_vs_naive": -0.0016419043230214703,
+  "oracle_gain_vs_resolver": 0.058175859648710415,
+  "oracle_gap_recovery_fraction": -0.029042799386007075,
+  "reliability_mae": 0.04015673168003559,
+  "resolver_choice_accuracy_on_conflict": 0.7503172382817996,
+  "resolver_choice_pixels": 1478384
+}

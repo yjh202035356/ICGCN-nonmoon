@@ -1,0 +1,225 @@
+import argparse
+import json
+import random
+from pathlib import Path
+
+import numpy as np
+import torch
+import torch.nn.functional as F
+from torch.utils.data import DataLoader
+from tqdm import tqdm
+
+from crss_dataset import KvasirTeacherDataset
+from psf_sam_controlled_common import (
+    build_psf_sam,
+    count_parameters,
+    make_records,
+    outputs_to_logits,
+)
+
+
+def seed_all(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+
+def soft_dice_loss(prob_fg, gt, eps=1e-6):
+    inter = (prob_fg * gt).sum(dim=(1,2,3))
+    denom = prob_fg.sum(dim=(1,2,3)) + gt.sum(dim=(1,2,3))
+    return (1.0 - (2.0 * inter + eps) / (denom + eps)).mean()
+
+
+def dice_score(prob_fg, gt, threshold=0.5, eps=1e-6):
+    pred = prob_fg >= threshold
+    truth = gt >= 0.5
+    inter = (pred & truth).sum(dim=(1,2,3)).float()
+    denom = pred.sum(dim=(1,2,3)).float() + truth.sum(dim=(1,2,3)).float()
+    return ((2.0 * inter + eps) / (denom + eps)).mean().item()
+
+
+def iou_score(prob_fg, gt, threshold=0.5, eps=1e-6):
+    pred = prob_fg >= threshold
+    truth = gt >= 0.5
+    inter = (pred & truth).sum(dim=(1,2,3)).float()
+    union = (pred | truth).sum(dim=(1,2,3)).float()
+    return ((inter + eps) / (union + eps)).mean().item()
+
+
+def forward_logits(model, image):
+    outputs = model(make_records(image), multimask_output=True)
+    return outputs_to_logits(outputs)
+
+
+@torch.no_grad()
+def validate(model, loader, device):
+    model.eval()
+    dices, ious = [], []
+
+    for batch in tqdm(loader, desc="psf-val", leave=False):
+        image = batch["image"].to(device, non_blocking=True)
+        gt = batch["mask"].to(device, non_blocking=True)
+
+        logits = forward_logits(model, image)
+        prob_fg = torch.softmax(logits, dim=1)[:, 1:2]
+
+        dices.append(dice_score(prob_fg, gt))
+        ious.append(iou_score(prob_fg, gt))
+
+    return {
+        "foreground_dice": float(np.mean(dices)),
+        "foreground_iou": float(np.mean(ious)),
+    }
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--train_root", required=True)
+    ap.add_argument("--val_root", required=True)
+    ap.add_argument("--sam_checkpoint", required=True)
+    ap.add_argument("--repo_root", default="baselines/PSF-SAM")
+    ap.add_argument("--work_dir", default="experiments/baselines/psf_sam_controlled")
+
+    ap.add_argument("--epochs", type=int, default=30)
+    ap.add_argument("--lr", type=float, default=1e-4)
+    ap.add_argument("--lr_step", type=int, default=10)
+    ap.add_argument("--lr_gamma", type=float, default=0.1)
+
+    ap.add_argument("--batch_size", type=int, default=1)
+    ap.add_argument("--accumulation_steps", type=int, default=4)
+    ap.add_argument("--weight_decay", type=float, default=1e-4)
+    ap.add_argument("--lambda_ce", type=float, default=1.0)
+    ap.add_argument("--lambda_dice", type=float, default=1.0)
+
+    ap.add_argument("--num_workers", type=int, default=4)
+    ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--device", default="cuda")
+    args = ap.parse_args()
+
+    seed_all(args.seed)
+
+    work = Path(args.work_dir)
+    work.mkdir(parents=True, exist_ok=True)
+
+    train_ds = KvasirTeacherDataset(args.train_root, image_size=1024, augment=True)
+    val_ds = KvasirTeacherDataset(args.val_root, image_size=1024, augment=False)
+
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=args.num_workers,
+        pin_memory=True,
+    )
+    val_loader = DataLoader(
+        val_ds,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=args.num_workers,
+        pin_memory=True,
+    )
+
+    model = build_psf_sam(args.sam_checkpoint, args.repo_root, args.device)
+
+    total_params, trainable_params = count_parameters(model)
+    print("total parameters:", total_params)
+    print("trainable parameters:", trainable_params)
+    print("trainable ratio:", trainable_params / total_params)
+
+    optimizer = torch.optim.AdamW(
+        [p for p in model.parameters() if p.requires_grad],
+        lr=args.lr,
+        weight_decay=args.weight_decay,
+    )
+    scheduler = torch.optim.lr_scheduler.StepLR(
+        optimizer,
+        step_size=args.lr_step,
+        gamma=args.lr_gamma,
+    )
+
+    best_dice = -1.0
+    history = []
+
+    for epoch in range(1, args.epochs + 1):
+        model.train()
+        optimizer.zero_grad(set_to_none=True)
+
+        losses, ce_losses, dice_losses = [], [], []
+
+        pbar = tqdm(
+            train_loader,
+            desc=f"psf epoch {epoch}/{args.epochs}",
+        )
+
+        for step, batch in enumerate(pbar, start=1):
+            image = batch["image"].to(args.device, non_blocking=True)
+            gt = batch["mask"].to(args.device, non_blocking=True)
+
+            logits = forward_logits(model, image)
+
+            target = gt[:, 0].long()
+            l_ce = F.cross_entropy(logits, target)
+
+            prob_fg = torch.softmax(logits, dim=1)[:, 1:2]
+            l_dice = soft_dice_loss(prob_fg, gt)
+
+            loss = args.lambda_ce * l_ce + args.lambda_dice * l_dice
+
+            (loss / args.accumulation_steps).backward()
+
+            if step % args.accumulation_steps == 0 or step == len(train_loader):
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+
+            losses.append(loss.item())
+            ce_losses.append(l_ce.item())
+            dice_losses.append(l_dice.item())
+
+            pbar.set_postfix(
+                loss=f"{np.mean(losses[-20:]):.4f}",
+                ce=f"{np.mean(ce_losses[-20:]):.4f}",
+                dice=f"{np.mean(dice_losses[-20:]):.4f}",
+                lr=f"{optimizer.param_groups[0]['lr']:.2e}",
+            )
+
+        metrics = validate(model, val_loader, args.device)
+
+        metrics.update({
+            "epoch": epoch,
+            "lr": optimizer.param_groups[0]["lr"],
+            "train_loss": float(np.mean(losses)),
+            "train_ce_loss": float(np.mean(ce_losses)),
+            "train_dice_loss": float(np.mean(dice_losses)),
+        })
+
+        history.append(metrics)
+        print(json.dumps(metrics, indent=2))
+
+        ckpt = {
+            "model": model.state_dict(),
+            "args": vars(args),
+            "epoch": epoch,
+            "metrics": metrics,
+        }
+
+        torch.save(ckpt, work / "latest.pth")
+
+        if metrics["foreground_dice"] > best_dice:
+            best_dice = metrics["foreground_dice"]
+            torch.save(ckpt, work / "best.pth")
+            print(f"[best] foreground_dice = {best_dice:.6f}")
+
+        (work / "history.json").write_text(
+            json.dumps(history, indent=2),
+            encoding="utf-8",
+        )
+
+        scheduler.step()
+
+    print("done")
+    print("best checkpoint:", work / "best.pth")
+
+
+if __name__ == "__main__":
+    main()

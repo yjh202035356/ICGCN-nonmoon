@@ -1,0 +1,10 @@
+[
+  {
+    "semantic_dice": 0.06362035498023033,
+    "structural_dice": 0.012361623413418947,
+    "naive_avg_dice": 0.0009956440855189291,
+    "epoch": 1,
+    "train_loss": 2.36785888671875,
+    "teacher_refine_delta": 0.04607253801077604
+  }
+]

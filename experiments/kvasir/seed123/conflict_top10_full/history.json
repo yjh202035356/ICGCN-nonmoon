@@ -1,0 +1,35 @@
+[
+  {
+    "epoch": 1,
+    "train_loss": 0.11770870354026557,
+    "mean_abs_correction": 0.07093380950258246,
+    "val_semantic_dice": 0.9247834417165834,
+    "val_structural_dice": 0.8563942399009786,
+    "val_naive_average_dice": 0.9120494573609129,
+    "val_final_dice": 0.9248425737939492,
+    "val_gain_vs_semantic": 5.913207736574222e-05,
+    "val_mean_abs_correction": 0.10119599029421807
+  },
+  {
+    "epoch": 2,
+    "train_loss": 0.11542826162118996,
+    "mean_abs_correction": 0.11245268827038152,
+    "val_semantic_dice": 0.9247834417165834,
+    "val_structural_dice": 0.8563942399009786,
+    "val_naive_average_dice": 0.9120494573609129,
+    "val_final_dice": 0.9258382214189896,
+    "val_gain_vs_semantic": 0.0010547797024061945,
+    "val_mean_abs_correction": 0.12300389774143695
+  },
+  {
+    "epoch": 3,
+    "train_loss": 0.11978953679491366,
+    "mean_abs_correction": 0.1106412077162947,
+    "val_semantic_dice": 0.9247834417165834,
+    "val_structural_dice": 0.8563942399009786,
+    "val_naive_average_dice": 0.9120494573609129,
+    "val_final_dice": 0.9257581158016537,
+    "val_gain_vs_semantic": 0.0009746740850702373,
+    "val_mean_abs_correction": 0.0867314551770687
+  }
+]

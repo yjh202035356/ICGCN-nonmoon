@@ -1,0 +1,93 @@
+[
+  {
+    "semantic_dice": 0.8604968737114956,
+    "structural_dice": 0.7870220702886581,
+    "naive_avg_dice": 0.8394162535716583,
+    "epoch": 1,
+    "train_loss": 0.9433776457181998
+  },
+  {
+    "semantic_dice": 0.8864769104123116,
+    "structural_dice": 0.8048226542770862,
+    "naive_avg_dice": 0.8733650481700898,
+    "epoch": 2,
+    "train_loss": 0.6757113410106727
+  },
+  {
+    "semantic_dice": 0.8938257247258713,
+    "structural_dice": 0.8268692068755626,
+    "naive_avg_dice": 0.8797520028054714,
+    "epoch": 3,
+    "train_loss": 0.616135243752173
+  },
+  {
+    "semantic_dice": 0.9055600622296334,
+    "structural_dice": 0.8380119189620018,
+    "naive_avg_dice": 0.893954060152173,
+    "epoch": 4,
+    "train_loss": 0.5599076721072197
+  },
+  {
+    "semantic_dice": 0.8846725577122808,
+    "structural_dice": 0.8203976830840111,
+    "naive_avg_dice": 0.878148691712995,
+    "epoch": 5,
+    "train_loss": 0.546099524050951
+  },
+  {
+    "semantic_dice": 0.9075853131711483,
+    "structural_dice": 0.826802444010973,
+    "naive_avg_dice": 0.897392068952322,
+    "epoch": 6,
+    "train_loss": 0.5319355964873518
+  },
+  {
+    "semantic_dice": 0.9086209166049958,
+    "structural_dice": 0.8532329444587231,
+    "naive_avg_dice": 0.9037417744845152,
+    "epoch": 7,
+    "train_loss": 0.49225909572626864
+  },
+  {
+    "semantic_dice": 0.9094585090924789,
+    "structural_dice": 0.8458958637714385,
+    "naive_avg_dice": 0.9010404136776924,
+    "epoch": 8,
+    "train_loss": 0.4784196074732712
+  },
+  {
+    "semantic_dice": 0.9052514798201148,
+    "structural_dice": 0.8422380174696446,
+    "naive_avg_dice": 0.891564479470253,
+    "epoch": 9,
+    "train_loss": 0.4753138008713722
+  },
+  {
+    "semantic_dice": 0.9078813813626766,
+    "structural_dice": 0.850920180529356,
+    "naive_avg_dice": 0.9047587963938714,
+    "epoch": 10,
+    "train_loss": 0.4653292550572327
+  },
+  {
+    "semantic_dice": 0.9129369604587555,
+    "structural_dice": 0.850772884786129,
+    "naive_avg_dice": 0.9051416683197021,
+    "epoch": 11,
+    "train_loss": 0.4307222281396389
+  },
+  {
+    "semantic_dice": 0.9128320942074061,
+    "structural_dice": 0.8410075959563256,
+    "naive_avg_dice": 0.9087569056451321,
+    "epoch": 12,
+    "train_loss": 0.4381441458633968
+  },
+  {
+    "semantic_dice": 0.9247834442555904,
+    "structural_dice": 0.8563942398130894,
+    "naive_avg_dice": 0.9120494577288628,
+    "epoch": 13,
+    "train_loss": 0.4240081099740097
+  }
+]

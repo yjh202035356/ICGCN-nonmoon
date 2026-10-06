@@ -1,0 +1,18 @@
+{
+  "n_images": 200,
+  "checkpoint_epoch": 45,
+  "semantic_dice": 0.8349135514749885,
+  "structural_dice": 0.8467887401720919,
+  "naive_average_dice": 0.8691623861396428,
+  "resolver_v2_fused_dice": 0.8785565391776293,
+  "oracle_dice": 0.9256963414653318,
+  "resolver_gain_vs_best_head": 0.03176779900553739,
+  "resolver_gain_vs_naive": 0.009394153037986519,
+  "oracle_gain_vs_resolver": 0.047139802287702426,
+  "oracle_gap_recovery_fraction_from_naive": 0.1661683316489591,
+  "overall_choice_accuracy": 0.7882383737919242,
+  "foreground_choice_accuracy": 0.7872047018783519,
+  "background_choice_accuracy": 0.7892335245550146,
+  "boundary_choice_accuracy": 0.6187705616013385,
+  "choice_pixels": 1478384
+}

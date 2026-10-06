@@ -1,0 +1,22 @@
+{
+  "method": "PSF-SAM-controlled",
+  "n_images": 200,
+  "checkpoint_epoch": 30,
+  "batch_size": 1,
+  "warmup_batches": 10,
+  "foreground_dice": 0.9054421488391009,
+  "foreground_iou": 0.8525419529990463,
+  "total_params": 948600376,
+  "trainable_params": 307509768,
+  "trainable_param_fraction": 0.32417209162059196,
+  "mean_latency_ms_per_image": 1370.3447969444096,
+  "median_latency_ms_per_image": 1365.242182975635,
+  "p95_latency_ms_per_image": 1430.9190555708483,
+  "fps": 0.729743347973296,
+  "gpu_model_allocated_mb": 3693.02001953125,
+  "gpu_model_reserved_mb": 3820.0,
+  "gpu_peak_allocated_mb": 7334.48095703125,
+  "gpu_peak_reserved_mb": 9486.0,
+  "gpu_incremental_peak_mb": 3633.3359375,
+  "timing_scope": "model forward + outputs_to_logits + softmax; excludes dataloader, H2D transfer, and metrics"
+}

@@ -1,0 +1,13 @@
+[
+  {
+    "epoch": 1,
+    "train_loss": 0.06529679521918297,
+    "mean_abs_correction": 0.002797412220388651,
+    "val_semantic_dice": 0.8708506396250337,
+    "val_structural_dice": 0.8509166653804421,
+    "val_naive_average_dice": 0.8926703027775471,
+    "val_final_dice": 0.8707257214088221,
+    "val_gain_vs_semantic": -0.00012491821621163357,
+    "val_mean_abs_correction": 0.01107613556087017
+  }
+]

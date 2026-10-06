@@ -1,0 +1,20 @@
+{
+  "n_images": 200,
+  "checkpoint_epoch": 50,
+  "semantic_dice": 0.8977538376561447,
+  "structural_dice": 0.8451741416056364,
+  "naive_average_dice": 0.8991472984261293,
+  "oracle_dice": 0.93525226187906,
+  "oracle_gain_vs_best_head": 0.03749842422291527,
+  "prediction_corr_informative_pixels": 0.7535734555125236,
+  "conflict_semantic_win_rate": 0.7427083631267339,
+  "conflict_structural_win_rate": 0.257291636873266,
+  "conflict_tie_rate": 0.0,
+  "overall_error_rate": 0.05388931185007095,
+  "top10_difficulty_error_rate": 0.4463508725166321,
+  "top10_difficulty_error_capture": 0.82827343283244,
+  "top20_difficulty_error_rate": 0.2510959506034851,
+  "top20_difficulty_error_capture": 0.9318952116408858,
+  "top30_difficulty_error_rate": 0.17418670654296875,
+  "top30_difficulty_error_capture": 0.9696915640953764
+}
