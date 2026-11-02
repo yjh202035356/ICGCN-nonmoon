@@ -1,0 +1,3 @@
+Refinement: cju2sevf53lkx08558h5bpaig | Semantic=0.8783, Structural=0.8295, CRSS=0.9227, CRSS-Semantic=+0.0444
+Agreement: cju88z8bson4h0871nnd7fdxo | Semantic=0.9730, Structural=0.9718, CRSS=0.9717, CRSS-Semantic=-0.0013
+Failure: cju1dg44i4z3w0801nyz4p6zf | Semantic=0.4909, Structural=0.3081, CRSS=0.3778, CRSS-Semantic=-0.1130

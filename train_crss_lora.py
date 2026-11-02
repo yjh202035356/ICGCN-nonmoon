@@ -115,7 +115,9 @@ def main():
     ap = argparse.ArgumentParser()
 
     ap.add_argument("--train_root", required=True)
-    ap.add_argument("--val_root", required=True)
+    ap.add_argument("--val_root")
+    ap.add_argument("--fixed_schedule", action="store_true")
+    ap.add_argument("--expected_train_count", type=int, default=0)
     ap.add_argument("--sam_checkpoint", required=True)
 
     ap.add_argument(
@@ -169,9 +171,16 @@ def main():
 
     # 메모리가 부족할 경우 사용
     ap.add_argument("--amp", action="store_true")
+    ap.add_argument("--teacher_refine_v2", action="store_true")
+    ap.add_argument("--affinity_temperature", type=float, default=0.1)
+    ap.add_argument("--teacher_weight", type=float, default=0.5)
 
     args = ap.parse_args()
 
+    if not args.fixed_schedule and not args.val_root:
+        ap.error("--val_root is required unless --fixed_schedule is used")
+    if args.fixed_schedule and args.val_root:
+        ap.error("Do not supply validation/test data in fixed-schedule mode")
     seed_all(args.seed)
 
     work = Path(args.work_dir)
@@ -187,10 +196,10 @@ def main():
         augment=True,
     )
 
-    va = KvasirTeacherDataset(
-        args.val_root,
-        args.image_size,
-        augment=False,
+    if args.expected_train_count and len(tr) != args.expected_train_count:
+        raise RuntimeError(f"Expected {args.expected_train_count} training images, got {len(tr)}")
+    va = None if args.fixed_schedule else KvasirTeacherDataset(
+        args.val_root, args.image_size, augment=False, require_teacher=False,
     )
 
     trl = DataLoader(
@@ -201,7 +210,7 @@ def main():
         pin_memory=True,
     )
 
-    val = DataLoader(
+    val = None if va is None else DataLoader(
         va,
         batch_size=args.batch_size,
         shuffle=False,
@@ -312,6 +321,10 @@ def main():
         enabled=args.amp
     )
 
+    from crss_teacher_refine_v2 import SAMAffinityTeacherRefiner
+    refiner = SAMAffinityTeacherRefiner(
+        temperature=args.affinity_temperature, teacher_weight=args.teacher_weight,
+    ) if args.teacher_refine_v2 else None
     best = -1.0
     history = []
 
@@ -390,6 +403,9 @@ def main():
                     align_corners=False,
                 ).clamp(0, 1)
 
+                if refiner is not None:
+                    teacher_s, _ = refiner(deep.detach(), teacher, output_size=(args.loss_size, args.loss_size))
+
                 # ------------------------------
                 # E0와 동일한 loss
                 # ------------------------------
@@ -461,16 +477,15 @@ def main():
         # Validation
         # --------------------------------------------------
 
-        m = validate(
-            ext,
-            heads,
-            val,
-            args.device,
-            args.loss_size,
+        m = {} if args.fixed_schedule else validate(
+            ext, heads, val, args.device, args.loss_size,
             max_batches=args.max_val_batches,
         )
 
         m["epoch"] = epoch
+        m["train_images"] = len(tr)
+        m["train_batches"] = step
+        m["selection"] = "fixed_final_epoch" if args.fixed_schedule else "validation"
         m["train_loss"] = float(
             np.mean(losses)
         )
@@ -485,9 +500,8 @@ def main():
         )
 
         # E0와 동일한 best criterion
-        score = 0.5 * (
-            m["semantic_dice"]
-            + m["structural_dice"]
+        score = None if args.fixed_schedule else 0.5 * (
+            m["semantic_dice"] + m["structural_dice"]
         )
 
         ck = {
@@ -508,7 +522,7 @@ def main():
             work / "latest.pth",
         )
 
-        if score > best:
+        if score is not None and score > best:
             best = score
 
             torch.save(

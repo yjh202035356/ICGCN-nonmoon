@@ -1,0 +1,11 @@
+[
+  {
+    "epoch": 1,
+    "train_images": 1450,
+    "train_batches": 2,
+    "selection": "fixed_final_epoch",
+    "train_loss": 2.0205353498458862,
+    "train_rel_loss": 0.7033180296421051,
+    "train_fuse_loss": 1.3172173500061035
+  }
+]

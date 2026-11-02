@@ -1,0 +1,985 @@
+import csv
+
+import math
+
+from pathlib import Path
+
+
+
+import cv2
+
+import numpy as np
+
+import matplotlib.pyplot as plt
+
+
+
+
+
+# =========================================================
+
+# Paths
+
+# =========================================================
+
+ROOT = Path("/home/prml/StudentsWork/Jihoon/CRSS-SAM")
+
+
+
+DATA_ROOT = ROOT / "data" / "Kvasir" / "test"
+
+IMAGE_DIR_CANDIDATES = [
+
+    DATA_ROOT / "images",
+
+    DATA_ROOT / "image",
+
+]
+
+MASK_DIR_CANDIDATES = [
+
+    DATA_ROOT / "masks",
+
+    DATA_ROOT / "mask",
+
+    DATA_ROOT / "labels",
+
+    DATA_ROOT / "label",
+
+]
+
+
+
+QUAL_ROOT = ROOT / "qualitative_outputs"
+
+SEM_DIR = QUAL_ROOT / "semantic"
+
+STR_DIR = QUAL_ROOT / "structural"
+
+CONFLICT_DIR = QUAL_ROOT / "conflict"
+
+CRSS_DIR = QUAL_ROOT / "crss"
+
+
+
+OUT_CSV = QUAL_ROOT / "per_image_dice_crss.csv"
+
+OUT_TXT = QUAL_ROOT / "figure3_selected_cases_crss.txt"
+
+OUT_FIG = QUAL_ROOT / "figure3_crss.png"
+
+# Colorblind-friendly boundary colors (RGB, Okabe-Ito palette)
+GT_COLOR = (0, 114, 178)      # Blue: Ground Truth
+PRED_COLOR = (240, 228, 66)   # Yellow: Prediction
+
+
+
+
+
+# =========================================================
+
+# Utils
+
+# =========================================================
+
+def find_existing_dir(candidates):
+
+    for p in candidates:
+
+        if p.exists():
+
+            return p
+
+    raise RuntimeError(f"None of these directories exist: {candidates}")
+
+
+
+
+
+IMAGE_DIR = find_existing_dir(IMAGE_DIR_CANDIDATES)
+
+MASK_DIR = find_existing_dir(MASK_DIR_CANDIDATES)
+
+
+
+
+
+def stem_without_all_suffixes(path: Path):
+
+    name = path.name
+
+    while True:
+
+        new_name = Path(name).stem
+
+        if new_name == name:
+
+            break
+
+        name = new_name
+
+    return name
+
+
+
+
+
+def build_stem_index(folder: Path):
+
+    d = {}
+
+    for p in folder.iterdir():
+
+        if p.is_file():
+
+            d[stem_without_all_suffixes(p)] = p
+
+    return d
+
+
+
+
+
+def read_image(path: Path):
+
+    img = cv2.imread(str(path), cv2.IMREAD_COLOR)
+
+    if img is None:
+
+        raise RuntimeError(f"Failed to read image: {path}")
+
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+    return img
+
+
+
+
+
+def read_mask(path: Path):
+
+    mask = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+
+    if mask is None:
+
+        raise RuntimeError(f"Failed to read mask: {path}")
+
+    mask = (mask > 127).astype(np.uint8)
+
+    return mask
+
+
+
+def resize_longest_and_pad(arr, size=256, is_mask=False):
+
+    h, w = arr.shape[:2]
+
+
+
+    scale = size / max(h, w)
+
+    new_h = int(round(h * scale))
+
+    new_w = int(round(w * scale))
+
+
+
+    interpolation = (
+
+        cv2.INTER_NEAREST
+
+        if is_mask
+
+        else cv2.INTER_LINEAR
+
+    )
+
+
+
+    resized = cv2.resize(
+
+        arr,
+
+        (new_w, new_h),
+
+        interpolation=interpolation,
+
+    )
+
+
+
+    if arr.ndim == 2:
+
+        canvas = np.zeros(
+
+            (size, size),
+
+            dtype=resized.dtype,
+
+        )
+
+    else:
+
+        canvas = np.zeros(
+
+            (size, size, arr.shape[2]),
+
+            dtype=resized.dtype,
+
+        )
+
+
+
+    canvas[:new_h, :new_w] = resized
+
+
+
+    return canvas
+
+
+
+def dice_score(pred, gt, eps=1e-6):
+
+    pred = pred.astype(np.uint8)
+
+    gt = gt.astype(np.uint8)
+
+    inter = np.sum(pred * gt)
+
+    return (2.0 * inter + eps) / (np.sum(pred) + np.sum(gt) + eps)
+
+
+
+
+
+def overlay_contour(image_rgb, mask_bin, color=(255, 0, 0), thickness=2):
+
+    out = image_rgb.copy()
+
+    mask_bin = (mask_bin > 0).astype(np.uint8)
+
+    contours, _ = cv2.findContours(
+
+        mask_bin, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+
+    )
+
+    cv2.drawContours(out, contours, -1, color, thickness)
+
+    return out
+
+
+
+
+
+def make_boundary_overlay(image_rgb, gt_bin, pred_bin):
+    out = image_rgb.copy()
+    out = overlay_contour(out, gt_bin, color=GT_COLOR, thickness=2)
+    out = overlay_contour(out, pred_bin, color=PRED_COLOR, thickness=2)
+    return out
+
+
+
+
+
+def conflict_to_heatmap(path: Path, target_hw=None):
+
+
+
+    heat = cv2.imread(
+
+        str(path),
+
+        cv2.IMREAD_COLOR,
+
+    )
+
+
+
+    if heat is None:
+
+        raise RuntimeError(
+
+            f"Failed to read conflict map: {path}"
+
+        )
+
+
+
+    if target_hw is not None:
+
+        h, w = target_hw
+
+
+
+        heat = cv2.resize(
+
+            heat,
+
+            (w, h),
+
+            interpolation=cv2.INTER_NEAREST,
+
+        )
+
+
+
+    heat = cv2.cvtColor(
+
+        heat,
+
+        cv2.COLOR_BGR2RGB,
+
+    )
+
+
+
+    return heat
+
+
+
+
+
+def crop_bbox_from_mask(mask, margin=25):
+
+    ys, xs = np.where(mask > 0)
+
+    h, w = mask.shape
+
+    if len(xs) == 0 or len(ys) == 0:
+
+        return 0, 0, w, h
+
+
+
+    x1 = max(0, xs.min() - margin)
+
+    y1 = max(0, ys.min() - margin)
+
+    x2 = min(w, xs.max() + 1 + margin)
+
+    y2 = min(h, ys.max() + 1 + margin)
+
+    return x1, y1, x2, y2
+
+
+
+
+
+def crop_with_box(img, box):
+
+    x1, y1, x2, y2 = box
+
+    return img[y1:y2, x1:x2]
+
+
+
+
+
+def resize_keep(img, out_size=320, is_mask=False):
+
+    h, w = img.shape[:2]
+
+    if h == 0 or w == 0:
+
+        raise RuntimeError("Empty crop encountered.")
+
+
+
+    scale = out_size / max(h, w)
+
+    new_w = max(1, int(round(w * scale)))
+
+    new_h = max(1, int(round(h * scale)))
+
+
+
+    interp = cv2.INTER_NEAREST if is_mask else cv2.INTER_LINEAR
+
+    resized = cv2.resize(img, (new_w, new_h), interpolation=interp)
+
+
+
+    if img.ndim == 2:
+
+        canvas = np.zeros((out_size, out_size), dtype=resized.dtype)
+
+        y0 = (out_size - new_h) // 2
+
+        x0 = (out_size - new_w) // 2
+
+        canvas[y0:y0+new_h, x0:x0+new_w] = resized
+
+    else:
+
+        canvas = np.zeros((out_size, out_size, img.shape[2]), dtype=resized.dtype)
+
+        y0 = (out_size - new_h) // 2
+
+        x0 = (out_size - new_w) // 2
+
+        canvas[y0:y0+new_h, x0:x0+new_w] = resized
+
+
+
+    return canvas
+
+
+
+
+
+def pick_case(records, mode):
+
+
+
+    if mode == "improvement":
+
+
+
+        cand = [
+
+            r for r in records
+
+            if (
+
+                r["crss_dice"] >= 0.80
+
+                and
+
+                r["crss_dice"] > r["semantic_dice"]
+
+                and
+
+                r["crss_dice"] > r["structural_dice"]
+
+            )
+
+        ]
+
+
+
+        cand = sorted(
+
+            cand,
+
+            key=lambda r: min(
+
+                r["crss_dice"] - r["semantic_dice"],
+
+                r["crss_dice"] - r["structural_dice"],
+
+            ),
+
+            reverse=True,
+
+        )
+
+
+
+        return cand[0]
+
+
+
+    elif mode == "typical":
+
+
+
+        # All three predictions should already be good.
+
+        cand = [
+
+            r for r in records
+
+            if (
+
+                r["semantic_dice"] > 0.90
+
+                and
+
+                r["structural_dice"] > 0.90
+
+                and
+
+                r["crss_dice"] > 0.90
+
+            )
+
+        ]
+
+
+
+        if len(cand) == 0:
+
+            cand = records
+
+
+
+        # Choose the case with the smallest
+
+        # differences between the three outputs.
+
+        cand = sorted(
+
+            cand,
+
+            key=lambda r:
+
+                abs(
+
+                    r["crss_dice"]
+
+                    - r["semantic_dice"]
+
+                )
+
+                +
+
+                abs(
+
+                    r["crss_dice"]
+
+                    - r["structural_dice"]
+
+                )
+
+        )
+
+
+
+        return cand[0]
+
+
+
+    elif mode == "failure":
+
+
+
+        # Case where refinement hurts the
+
+        # semantic prediction most.
+
+        cand = [
+
+            r for r in records
+
+            if (
+
+                r["crss_dice"]
+
+                < r["semantic_dice"]
+
+            )
+
+        ]
+
+
+
+        if len(cand) == 0:
+
+            cand = records
+
+
+
+        cand = sorted(
+
+            cand,
+
+            key=lambda r:
+
+                r["crss_dice"]
+
+                - r["semantic_dice"]
+
+        )
+
+
+
+        return cand[0]
+
+
+
+    else:
+
+        raise ValueError(mode)
+
+
+
+
+
+# =========================================================
+
+# Main
+
+# =========================================================
+
+def main():
+
+    image_index = build_stem_index(IMAGE_DIR)
+
+    mask_index = build_stem_index(MASK_DIR)
+
+    sem_index = build_stem_index(SEM_DIR)
+
+    str_index = build_stem_index(STR_DIR)
+
+    conflict_index = build_stem_index(CONFLICT_DIR)
+
+    crss_index = build_stem_index(CRSS_DIR)
+
+
+
+    common = sorted(
+
+        set(image_index.keys())
+
+        & set(mask_index.keys())
+
+        & set(sem_index.keys())
+
+        & set(str_index.keys())
+
+        & set(conflict_index.keys())
+
+        & set(crss_index.keys())
+
+    )
+
+
+
+    print(f"Common test samples: {len(common)}")
+
+    if len(common) == 0:
+
+        raise RuntimeError("No common samples found.")
+
+
+
+    records = []
+
+
+
+    for stem in common:
+
+        gt = read_mask(mask_index[stem])
+
+
+
+        gt = resize_longest_and_pad(
+
+            gt,
+
+            size=256,
+
+            is_mask=True,
+
+        )
+
+
+
+        sem = read_mask(sem_index[stem])
+
+        st = read_mask(str_index[stem])
+
+        crss = read_mask(crss_index[stem])
+
+
+
+        sem_dice = dice_score(sem, gt)
+
+        st_dice = dice_score(st, gt)
+
+        crss_dice = dice_score(crss, gt)
+
+
+
+        records.append({
+
+            "stem": stem,
+
+            "semantic_dice": sem_dice,
+
+            "structural_dice": st_dice,
+
+            "crss_dice": crss_dice,
+
+            "gain_sem": crss_dice - sem_dice,
+
+            "gain_str": crss_dice - st_dice,
+
+        })
+
+
+
+    # Save CSV
+
+    with open(OUT_CSV, "w", newline="", encoding="utf-8") as f:
+
+        writer = csv.DictWriter(
+
+            f,
+
+            fieldnames=[
+
+                "stem",
+
+                "semantic_dice",
+
+                "structural_dice",
+
+                "crss_dice",
+
+                "gain_sem",
+
+                "gain_str",
+
+            ],
+
+        )
+
+        writer.writeheader()
+
+        for r in records:
+
+            writer.writerow(r)
+
+
+
+    improvement = pick_case(records, "improvement")
+
+    typical = pick_case(records, "typical")
+
+    failure = pick_case(records, "failure")
+
+
+
+    selected = [
+
+        ("Refinement", improvement),
+
+        ("Agreement", typical),
+
+        ("Failure", failure),
+
+    ]
+
+
+
+    with open(OUT_TXT, "w", encoding="utf-8") as f:
+
+        for name, r in selected:
+
+            line = (
+
+                f"{name}: {r['stem']} | "
+
+                f"Semantic={r['semantic_dice']:.4f}, "
+
+                f"Structural={r['structural_dice']:.4f}, "
+
+                f"CRSS={r['crss_dice']:.4f}, "
+
+                f"CRSS-Semantic={r['gain_sem']:+.4f}"
+
+            )
+
+            print(line)
+
+            f.write(line + "\n")
+
+
+
+    # Figure
+
+    col_titles = [
+
+        "Input",
+
+        "Ground Truth",
+
+        "Semantic",
+
+        "Structural",
+
+        "Conflict Map",
+
+        "CRSS-SAM (Ours)",
+
+    ]
+
+
+
+    fig, axes = plt.subplots(
+
+        nrows=3,
+
+        ncols=6,
+
+        figsize=(18, 10),
+
+        dpi=200,
+
+    )
+
+
+
+    for row_idx, (row_name, rec) in enumerate(selected):
+
+        stem = rec["stem"]
+
+
+
+        img = read_image(image_index[stem])
+
+        img = resize_longest_and_pad(
+
+            img,
+
+            size=256,
+
+            is_mask=False,
+
+        )
+
+
+
+        gt = read_mask(mask_index[stem])
+
+        gt = resize_longest_and_pad(
+
+            gt,
+
+            size=256,
+
+            is_mask=True,
+
+        )
+
+
+
+        sem = read_mask(sem_index[stem])
+
+        st = read_mask(str_index[stem])
+
+        crss = read_mask(crss_index[stem])
+
+
+
+        # use union of GT and all predictions for better crop
+
+        union_mask = ((gt > 0) | (sem > 0) | (st > 0) | (crss > 0)).astype(np.uint8)
+
+        box = crop_bbox_from_mask(union_mask, margin=30)
+
+
+
+        img_crop = resize_keep(crop_with_box(img, box), out_size=320, is_mask=False)
+
+        gt_crop = resize_keep(crop_with_box(gt, box), out_size=320, is_mask=True)
+
+        sem_crop = resize_keep(crop_with_box(sem, box), out_size=320, is_mask=True)
+
+        st_crop = resize_keep(crop_with_box(st, box), out_size=320, is_mask=True)
+
+        crss_crop = resize_keep(crop_with_box(crss, box), out_size=320, is_mask=True)
+
+
+
+        x1, y1, x2, y2 = box
+
+        conflict_img = conflict_to_heatmap(conflict_index[stem], target_hw=gt.shape)
+
+        conflict_crop = resize_keep(
+
+            crop_with_box(conflict_img, (x1, y1, x2, y2)),
+
+            out_size=320,
+
+            is_mask=False,
+
+        )
+
+
+
+        gt_vis = np.stack([gt_crop * 255] * 3, axis=-1)
+
+        sem_vis = make_boundary_overlay(img_crop, gt_crop, sem_crop)
+
+        st_vis = make_boundary_overlay(img_crop, gt_crop, st_crop)
+
+        crss_vis = make_boundary_overlay(img_crop, gt_crop, crss_crop)
+
+
+
+        visuals = [
+
+            img_crop,
+
+            gt_vis,
+
+            sem_vis,
+
+            st_vis,
+
+            conflict_crop,
+
+            crss_vis,
+
+        ]
+
+
+
+        for col_idx in range(6):
+
+            ax = axes[row_idx, col_idx]
+
+            ax.imshow(visuals[col_idx])
+
+            ax.axis("off")
+
+
+
+            if row_idx == 0:
+
+                ax.set_title(col_titles[col_idx], fontsize=12, pad=10)
+
+
+
+
+        # Keep row labels concise for the paper figure.
+        row_text = row_name
+        axes[row_idx, 0].text(
+            -0.10, 0.5, row_text,
+            transform=axes[row_idx, 0].transAxes,
+            fontsize=12,
+            fontweight="bold",
+            va="center",
+            ha="right",
+        )
+
+
+
+    plt.tight_layout()
+
+    plt.savefig(OUT_FIG, bbox_inches="tight")
+
+    plt.close(fig)
+
+
+
+    print("\nSaved:")
+
+    print(OUT_CSV)
+
+    print(OUT_TXT)
+
+    print(OUT_FIG)
+
+    print("\nFigure note: Blue = Ground Truth boundary, Orange = Prediction boundary")
+
+
+
+
+
+if __name__ == "__main__":
+
+    main()

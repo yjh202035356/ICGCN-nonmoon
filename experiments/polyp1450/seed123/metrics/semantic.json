@@ -1,0 +1,75 @@
+{
+  "pysodmetrics_version": "1.6.2",
+  "protocol": "SAM2-UNet eval.py: FmeasureV2 dynamic Dice/IoU averaged across 256 thresholds and images",
+  "fixed_threshold_note": "0.5 applies to stored grayscale map; not guaranteed raw sigmoid probability",
+  "results": [
+    {
+      "method": "CRSS_semantic",
+      "provenance": "local_inference",
+      "dataset": "Kvasir",
+      "n": 100,
+      "threshold_mean_dice": 0.9107756188545286,
+      "threshold_mean_iou": 0.8564740530011271,
+      "stored_map_dice_at_0.5": 0.9224872469896463,
+      "stored_map_iou_at_0.5": 0.8715089495306303,
+      "raw_probability_dice_at_0_5": 0.9225237435021731,
+      "raw_probability_iou_at_0_5": 0.8715677855520686
+    },
+    {
+      "method": "CRSS_semantic",
+      "provenance": "local_inference",
+      "dataset": "CVC-ClinicDB",
+      "n": 62,
+      "threshold_mean_dice": 0.8525212820131391,
+      "threshold_mean_iou": 0.7952396846011097,
+      "stored_map_dice_at_0.5": 0.8612339390586157,
+      "stored_map_iou_at_0.5": 0.8061117906440313,
+      "raw_probability_dice_at_0_5": 0.8612522469084885,
+      "raw_probability_iou_at_0_5": 0.8061410420566204
+    },
+    {
+      "method": "CRSS_semantic",
+      "provenance": "local_inference",
+      "dataset": "CVC-ColonDB",
+      "n": 380,
+      "threshold_mean_dice": 0.769025150422161,
+      "threshold_mean_iou": 0.6936393333779969,
+      "stored_map_dice_at_0.5": 0.7765094972980283,
+      "stored_map_iou_at_0.5": 0.7020284910485011,
+      "raw_probability_dice_at_0_5": 0.7759262105662122,
+      "raw_probability_iou_at_0_5": 0.7017105262404372
+    },
+    {
+      "method": "CRSS_semantic",
+      "provenance": "local_inference",
+      "dataset": "ETIS-LaribPolypDB",
+      "n": 196,
+      "threshold_mean_dice": 0.772148408758424,
+      "threshold_mean_iou": 0.6909773868497026,
+      "stored_map_dice_at_0.5": 0.7802981650312459,
+      "stored_map_iou_at_0.5": 0.7000787246177309,
+      "raw_probability_dice_at_0_5": 0.7802449844292851,
+      "raw_probability_iou_at_0_5": 0.7000096953835865
+    },
+    {
+      "method": "CRSS_semantic",
+      "provenance": "local_inference",
+      "dataset": "CVC-300",
+      "n": 60,
+      "threshold_mean_dice": 0.8764842768591676,
+      "threshold_mean_iou": 0.8081786899052212,
+      "stored_map_dice_at_0.5": 0.883699089363449,
+      "stored_map_iou_at_0.5": 0.8166991174606691,
+      "raw_probability_dice_at_0_5": 0.8836890323323673,
+      "raw_probability_iou_at_0_5": 0.816672382586598
+    }
+  ],
+  "macro_mean": {
+    "threshold_mean_dice": 0.836190947381484,
+    "threshold_mean_iou": 0.7689018295470315,
+    "stored_map_dice_at_0.5": 0.844845587548197,
+    "stored_map_iou_at_0.5": 0.7792854146603125,
+    "raw_probability_dice_at_0_5": 0.8447272435477053,
+    "raw_probability_iou_at_0_5": 0.7792202863638622
+  }
+}

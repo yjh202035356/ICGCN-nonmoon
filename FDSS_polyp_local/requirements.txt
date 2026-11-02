@@ -1,0 +1,12 @@
+# Torch/torchvision are inherited from the already-tested sam2unet-polyp env.
+# Do not install the author's torch 2.8/CUDA 12.8 stack on driver 550.120.
+numpy==1.26.4
+Pillow==10.4.0
+timm==0.6.13
+einops==0.8.0
+thop==0.1.1.post2209072238
+opencv-python-headless==4.10.0.84
+scikit-image==0.25.2
+scipy==1.13.1
+tqdm==4.66.5
+huggingface-hub==0.24.6

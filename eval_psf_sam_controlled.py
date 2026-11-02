@@ -4,6 +4,8 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import cv2
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -38,7 +40,19 @@ def main():
     ap.add_argument("--num_workers", type=int, default=4)
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--output", required=True)
+    ap.add_argument(
+        "--save_dir",
+        default=None,
+        help="Directory for saving PSF-SAM prediction masks.",
+    )
     args = ap.parse_args()
+
+    if args.save_dir is not None:
+        save_dir = Path(args.save_dir)
+        save_dir.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
 
     ds = KvasirTeacherDataset(args.data_root, image_size=1024, augment=False)
     loader = DataLoader(
@@ -66,6 +80,36 @@ def main():
             outputs = model(make_records(image), multimask_output=True)
             logits = outputs_to_logits(outputs)
             prob_fg = torch.softmax(logits, dim=1)[:, 1:2]
+
+            # Figure 3용 prediction은
+            # CRSS와 동일하게 256 x 256으로 저장
+            prob_vis = F.interpolate(
+                prob_fg,
+                size=(256, 256),
+                mode="bilinear",
+                align_corners=False,
+            )
+
+            if args.save_dir is not None:
+                names = batch["name"]
+
+                for i in range(image.shape[0]):
+                    pred_np = (
+                        (prob_vis[i, 0] >= 0.5)
+                        .detach()
+                        .cpu()
+                        .numpy()
+                        .astype(np.uint8)
+                        * 255
+                    )
+
+                    cv2.imwrite(
+                        str(
+                            save_dir
+                            / f"{names[i]}.png"
+                        ),
+                        pred_np,
+                    )
 
             for i in range(image.shape[0]):
                 d, j = binary_metrics(

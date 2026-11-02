@@ -162,7 +162,10 @@ def validate(ext, heads, resolver, loader, device, out_size, tau):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--train_root", required=True)
-    ap.add_argument("--val_root", required=True)
+    ap.add_argument("--val_root")
+    ap.add_argument("--fixed_schedule", action="store_true")
+    ap.add_argument("--expected_train_count", type=int, default=0)
+    ap.add_argument("--max_train_batches", type=int, default=0)
     ap.add_argument("--sam_checkpoint", required=True)
     ap.add_argument("--heads_checkpoint", required=True)
 
@@ -190,22 +193,28 @@ def main():
     ap.add_argument("--device", default="cuda")
     args = ap.parse_args()
 
+    if not args.fixed_schedule and not args.val_root:
+        ap.error("--val_root is required unless --fixed_schedule is used")
+    if args.fixed_schedule and args.val_root:
+        ap.error("Do not supply validation/test data in fixed-schedule mode")
     seed_all(args.seed)
     work = Path(args.work_dir)
     work.mkdir(parents=True, exist_ok=True)
 
     tr = KvasirTeacherDataset(
-        args.train_root, image_size=1024, augment=True
+        args.train_root, image_size=1024, augment=True, require_teacher=False
     )
-    va = KvasirTeacherDataset(
-        args.val_root, image_size=1024, augment=False
+    if args.expected_train_count and len(tr) != args.expected_train_count:
+        raise RuntimeError(f"Expected {args.expected_train_count} training images, got {len(tr)}")
+    va = None if args.fixed_schedule else KvasirTeacherDataset(
+        args.val_root, image_size=1024, augment=False, require_teacher=False
     )
 
     tr_loader = DataLoader(
         tr, batch_size=args.batch_size, shuffle=True,
         num_workers=args.num_workers, pin_memory=True
     )
-    va_loader = DataLoader(
+    va_loader = None if va is None else DataLoader(
         va, batch_size=args.batch_size, shuffle=False,
         num_workers=args.num_workers, pin_memory=True
     )
@@ -214,15 +223,8 @@ def main():
         checkpoint=args.sam_checkpoint
     ).to(args.device)
 
-    ext = FrozenSAMFeatureExtractor(
-        sam, mid_block=args.mid_block
-    ).to(args.device)
-
-    heads = DualCueHeads(
-        ext.mid_channels, ext.deep_channels
-    ).to(args.device)
-    hck = torch.load(args.heads_checkpoint, map_location="cpu")
-    heads.load_state_dict(hck["heads"])
+    from polyp_checkpoint import build_backbone
+    ext, heads, hck = build_backbone(sam, args.heads_checkpoint, args.device, args.mid_block)
     heads.eval()
     for p in heads.parameters():
         p.requires_grad = False
@@ -311,6 +313,7 @@ def main():
             if (
                 step % args.accumulation_steps == 0
                 or step == len(tr_loader)
+                or (args.max_train_batches > 0 and step >= args.max_train_batches)
             ):
                 opt.step()
                 opt.zero_grad(set_to_none=True)
@@ -325,13 +328,17 @@ def main():
                 fuse=f"{np.mean(fuse_losses[-20:]):.4f}",
             )
 
-        metrics = validate(
-            ext, heads, resolver,
-            va_loader, args.device,
-            args.out_size, args.tau
+            if args.max_train_batches > 0 and step >= args.max_train_batches:
+                break
+
+        metrics = {} if args.fixed_schedule else validate(
+            ext, heads, resolver, va_loader, args.device, args.out_size, args.tau
         )
 
         metrics["epoch"] = epoch
+        metrics["train_images"] = len(tr)
+        metrics["train_batches"] = step
+        metrics["selection"] = "fixed_final_epoch" if args.fixed_schedule else "validation"
         metrics["train_loss"] = float(np.mean(losses))
         metrics["train_rel_loss"] = float(np.mean(rel_losses))
         metrics["train_fuse_loss"] = float(np.mean(fuse_losses))
@@ -341,6 +348,7 @@ def main():
 
         ckpt = {
             "resolver": resolver.state_dict(),
+            "backbone_sha256": __import__("polyp_checkpoint").file_sha256(args.heads_checkpoint),
             "args": vars(args),
             "epoch": epoch,
             "metrics": metrics,
@@ -348,7 +356,7 @@ def main():
 
         torch.save(ckpt, work/"latest.pth")
 
-        if metrics["resolver_v2_fused_dice"] > best:
+        if not args.fixed_schedule and metrics["resolver_v2_fused_dice"] > best:
             best = metrics["resolver_v2_fused_dice"]
             torch.save(ckpt, work/"best.pth")
             print(f"[best] resolver_v2_fused_dice = {best:.6f}")

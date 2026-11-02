@@ -17,3 +17,20 @@ experiments/**/*.pth
 
 # Logs
 *.log
+
+# Python virtual environments
+/.venv*/
+
+# Generated predictions
+experiments/**/predictions/
+*.npz
+*.npy
+
+# Local environments and generated predictions
+/.venv-polyp-eval/
+/experiments/polyp1450/seed123/predictions/
+
+# Generated predictions
+experiments/**/predictions/
+*.npz
+*.npy

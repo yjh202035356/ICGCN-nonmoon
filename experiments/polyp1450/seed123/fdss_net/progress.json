@@ -1,0 +1,7 @@
+{
+  "epoch": 100,
+  "epochs": 100,
+  "train_batches": 91,
+  "optimizer_steps_per_epoch": 273,
+  "selection": "fixed_final_epoch"
+}

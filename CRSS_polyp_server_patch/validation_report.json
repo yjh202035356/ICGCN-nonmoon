@@ -1,0 +1,36 @@
+{
+  "status": "PASS",
+  "base_commit": "b8fdd99",
+  "local_environment": {
+    "Python": "3.12.14",
+    "PyTorch": "2.2.2+cpu",
+    "numpy": "1.26.4",
+    "OpenCV": "4.10.0",
+    "pysodmetrics": "1.6.2"
+  },
+  "target_environment": {
+    "Python": "3.10.20",
+    "PyTorch": "2.1.0+cu121",
+    "GPU": "TITAN RTX 24 GB x2"
+  },
+  "tests_passed": 6,
+  "checks": [
+    "Strict complete triplets and teacher-free evaluation",
+    "Duplicate stems, dimension mismatch, constant teacher rejection",
+    "Actual IBA optimization using a small fixed test teacher; PNG saving, provenance, resume",
+    "Fixed-schedule LoRA optimizer updates, exact LoRA restore and missing tensor rejection",
+    "Frozen LoRA resolver training without teacher maps and original-resolution probability export",
+    "Official validation path rejected during fixed-schedule training",
+    "Raw probability 0.5 metrics kept separate from normalized map 0.5 metrics",
+    "Python 3.10 syntax parsing",
+    "Bash syntax",
+    "git diff whitespace",
+    "Fresh b8fdd99 checkout: patch application, idempotency, and exact match of all 10 modified/added files"
+  ],
+  "limitations": [
+    "No actual pretrained BiomedCLIP/SAM checkpoints available locally",
+    "No TITAN RTX or CUDA execution here",
+    "Synthetic CPU tests are not polyp benchmark scores",
+    "All actual server training and inference remain pending"
+  ]
+}

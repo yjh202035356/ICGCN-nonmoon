@@ -1,0 +1,970 @@
+diff --git a/crss_dataset.py b/crss_dataset.py
+index 287cc4a..74267e8 100644
+--- a/crss_dataset.py
++++ b/crss_dataset.py
+@@ -9,8 +9,13 @@ IMG_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
+ SAM_PIXEL_MEAN_RGB = np.array([123.675, 116.28, 103.53], dtype=np.float32)
+ 
+ def _index_by_stem(folder: Path):
+-    return {p.stem: p for p in folder.iterdir()
+-            if p.is_file() and p.suffix.lower() in IMG_EXTS}
++    result = {}
++    for p in folder.iterdir():
++        if p.is_file() and p.suffix.lower() in IMG_EXTS and not p.name.startswith('.'):
++            if p.stem in result:
++                raise RuntimeError(f"Duplicate stem in {folder}: {p.stem}")
++            result[p.stem] = p
++    return result
+ 
+ def resize_longest_and_pad(arr, image_size=1024, is_mask=False, image_pad_value=None):
+     h, w = arr.shape[:2]
+@@ -31,15 +36,22 @@ def resize_longest_and_pad(arr, image_size=1024, is_mask=False, image_pad_value=
+     return out
+ 
+ class KvasirTeacherDataset(Dataset):
+-    def __init__(self, split_root, image_size=1024, augment=False):
++    def __init__(self, split_root, image_size=1024, augment=False, require_teacher=True):
+         self.root = Path(split_root)
+         self.image_size = image_size
+         self.augment = augment
++        self.require_teacher = require_teacher
+ 
+         self.images = _index_by_stem(self.root / "images")
+         self.labels = _index_by_stem(self.root / "labels")
+-        self.maps = _index_by_stem(self.root / "attribution_map")
+-        self.stems = sorted(set(self.images) & set(self.labels) & set(self.maps))
++        self.maps = _index_by_stem(self.root / "attribution_map") if require_teacher else {}
++        expected = set(self.images)
++        for name, index in [("labels", self.labels)] + ([("attribution_map", self.maps)] if require_teacher else []):
++            if set(index) != expected:
++                missing = sorted(expected - set(index))
++                extra = sorted(set(index) - expected)
++                raise RuntimeError(f"Incomplete {name}: missing={len(missing)} {missing[:5]}, extra={len(extra)} {extra[:5]}")
++        self.stems = sorted(expected)
+         if not self.stems:
+             raise RuntimeError(f"No matched triplets in {self.root}")
+ 
+@@ -51,9 +63,11 @@ class KvasirTeacherDataset(Dataset):
+ 
+         image = cv2.imread(str(self.images[stem]), cv2.IMREAD_COLOR)
+         mask = cv2.imread(str(self.labels[stem]), cv2.IMREAD_GRAYSCALE)
+-        teacher = cv2.imread(str(self.maps[stem]), cv2.IMREAD_GRAYSCALE)
+-        if image is None or mask is None or teacher is None:
++        teacher = cv2.imread(str(self.maps[stem]), cv2.IMREAD_GRAYSCALE) if self.require_teacher else None
++        if image is None or mask is None or (self.require_teacher and teacher is None):
+             raise RuntimeError(f"Read failure: {stem}")
++        if image.shape[:2] != mask.shape or (self.require_teacher and teacher.shape != mask.shape):
++            raise RuntimeError(f"Image/mask/teacher dimension mismatch: {stem}")
+ 
+         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+         image = resize_longest_and_pad(
+@@ -61,27 +75,33 @@ class KvasirTeacherDataset(Dataset):
+             image_pad_value=SAM_PIXEL_MEAN_RGB
+         )
+         mask = resize_longest_and_pad(mask, self.image_size, is_mask=True)
+-        teacher = resize_longest_and_pad(teacher, self.image_size, is_mask=False)
++        if self.require_teacher:
++            teacher = resize_longest_and_pad(teacher, self.image_size, is_mask=False)
+ 
+         mask = (mask > 127).astype(np.float32)
+-        teacher = teacher.astype(np.float32) / 255.0
+-        tmin, tmax = float(teacher.min()), float(teacher.max())
+-        if tmax > tmin + 1e-6:
+-            teacher = (teacher - tmin) / (tmax - tmin)
++        if self.require_teacher:
++            teacher = teacher.astype(np.float32) / 255.0
++            tmin, tmax = float(teacher.min()), float(teacher.max())
++            if tmax > tmin + 1e-6:
++                teacher = (teacher - tmin) / (tmax - tmin)
+ 
+         if self.augment:
+             if random.random() < 0.5:
+                 image = np.flip(image, 1).copy()
+                 mask = np.flip(mask, 1).copy()
+-                teacher = np.flip(teacher, 1).copy()
++                if self.require_teacher:
++                    teacher = np.flip(teacher, 1).copy()
+             if random.random() < 0.5:
+                 image = np.flip(image, 0).copy()
+                 mask = np.flip(mask, 0).copy()
+-                teacher = np.flip(teacher, 0).copy()
++                if self.require_teacher:
++                    teacher = np.flip(teacher, 0).copy()
+ 
+-        return {
++        sample = {
+             "image": torch.from_numpy(image).permute(2,0,1).float(),
+             "mask": torch.from_numpy(mask)[None].float(),
+-            "teacher": torch.from_numpy(teacher)[None].float(),
+             "name": stem,
+         }
++        if self.require_teacher:
++            sample["teacher"] = torch.from_numpy(teacher)[None].float()
++        return sample
+diff --git a/evaluate_polyp_masks.py b/evaluate_polyp_masks.py
+new file mode 100644
+index 0000000..9f49492
+--- /dev/null
++++ b/evaluate_polyp_masks.py
+@@ -0,0 +1,90 @@
++"""Evaluate grayscale prediction maps using SAM2-UNet's metric implementation.
++
++Published-style metrics average over 256 thresholds and then samples.
++Fixed-0.5 metrics refer to the supplied stored map; this may be min/max
++normalized and is not necessarily the model's original sigmoid probability.
++"""
++import argparse
++import csv
++import importlib.metadata
++import json
++from pathlib import Path
++
++import numpy as np
++from PIL import Image
++import py_sod_metrics
++from scripts.prepare_polyp1450 import TEST_COUNTS as DATASETS, index as image_index
++
++def evaluate(pred_root, gt_root, method, provenance, output, raw_root=None, raw_key=None):
++    if bool(raw_root) != bool(raw_key):
++        raise ValueError('Supply both raw_root and raw_key, or neither')
++    results=[]
++    for dataset, expected in DATASETS.items():
++        preds=image_index(Path(pred_root)/dataset)
++        gts=image_index(Path(gt_root)/dataset/'masks')
++        if len(gts)!=expected or preds.keys()!=gts.keys():
++            raise ValueError(f'{dataset}: expected {expected} complete matching predictions; '
++                             f'got {len(preds)} predictions / {len(gts)} masks; '
++                             f'missing={sorted(gts.keys()-preds.keys())[:5]}, '
++                             f'extra={sorted(preds.keys()-gts.keys())[:5]}')
++        fm=py_sod_metrics.FmeasureV2(metric_handlers={
++            'dice':py_sod_metrics.DICEHandler(with_adaptive=False,with_dynamic=True),
++            'iou':py_sod_metrics.IOUHandler(with_adaptive=False,with_dynamic=True)})
++        fixed_dice, fixed_iou = [], []
++        raw_dice, raw_iou = [], []
++        for stem in sorted(gts):
++            with Image.open(preds[stem]) as im: pred=np.asarray(im.convert('L'))
++            with Image.open(gts[stem]) as im: gt=np.asarray(im.convert('L'))
++            if pred.shape!=gt.shape:
++                raise ValueError(f'{dataset}/{stem}: predictions must be at GT size, got {pred.shape}/{gt.shape}')
++            fm.step(pred=pred, gt=gt)
++            p, g = pred.astype(np.float64)/255 >= .5, gt>127
++            inter=np.logical_and(p,g).sum()
++            total=p.sum()+g.sum(); union=np.logical_or(p,g).sum()
++            fixed_dice.append(float(2*inter/total) if total else 1.)
++            fixed_iou.append(float(inter/union) if union else 1.)
++            if raw_root:
++                with np.load(Path(raw_root)/dataset/f'{stem}.npz') as arrays:
++                    probability=arrays[raw_key]
++                if probability.shape != gt.shape or not np.isfinite(probability).all():
++                    raise ValueError(f'Invalid raw probability: {dataset}/{stem}')
++                if probability.min()<0 or probability.max()>1:
++                    raise ValueError(f'Probability outside [0,1]: {dataset}/{stem}')
++                raw_pred=probability>=.5
++                raw_inter=np.logical_and(raw_pred,g).sum()
++                raw_total=raw_pred.sum()+g.sum()
++                raw_union=np.logical_or(raw_pred,g).sum()
++                raw_dice.append(float(2*raw_inter/raw_total) if raw_total else 1.)
++                raw_iou.append(float(raw_inter/raw_union) if raw_union else 1.)
++        measured=fm.get_results()
++        row={'method':method,'provenance':provenance,'dataset':dataset,'n':expected,
++             'threshold_mean_dice':float(measured['dice']['dynamic'].mean()),
++             'threshold_mean_iou':float(measured['iou']['dynamic'].mean()),
++             'stored_map_dice_at_0.5':float(np.mean(fixed_dice)),
++             'stored_map_iou_at_0.5':float(np.mean(fixed_iou))}
++        if raw_root:
++            row.update(raw_probability_dice_at_0_5=float(np.mean(raw_dice)),
++                       raw_probability_iou_at_0_5=float(np.mean(raw_iou)))
++        results.append(row); print(json.dumps(row),flush=True)
++    out=Path(output); out.parent.mkdir(parents=True,exist_ok=True)
++    with out.with_suffix('.csv').open('w',newline='') as f:
++        w=csv.DictWriter(f,fieldnames=list(results[0]));w.writeheader();w.writerows(results)
++    out.with_suffix('.json').write_text(json.dumps({
++        'pysodmetrics_version':importlib.metadata.version('pysodmetrics'),
++        'protocol':'SAM2-UNet eval.py: FmeasureV2 dynamic Dice/IoU averaged across 256 thresholds and images',
++        'fixed_threshold_note':'0.5 applies to stored grayscale map; not guaranteed raw sigmoid probability',
++        'results':results,
++        'macro_mean':{k:float(np.mean([r[k] for r in results])) for k in
++                      ['threshold_mean_dice','threshold_mean_iou','stored_map_dice_at_0.5','stored_map_iou_at_0.5']
++                      + (['raw_probability_dice_at_0_5','raw_probability_iou_at_0_5'] if raw_root else [])}},indent=2))
++
++if __name__=='__main__':
++    p=argparse.ArgumentParser()
++    p.add_argument('--pred-root',required=True)
++    p.add_argument('--gt-root',default='data/TestDataset')
++    p.add_argument('--method',required=True)
++    p.add_argument('--provenance',choices=['author_precomputed_maps','local_inference'],required=True)
++    p.add_argument('--output',required=True)
++    p.add_argument('--raw-root')
++    p.add_argument('--raw-key',choices=['semantic','structural','naive_average','resolver_v2'])
++    a=p.parse_args();evaluate(a.pred_root,a.gt_root,a.method,a.provenance,a.output,a.raw_root,a.raw_key)
+diff --git a/export_polyp_benchmark.py b/export_polyp_benchmark.py
+new file mode 100644
+index 0000000..eff69bd
+--- /dev/null
++++ b/export_polyp_benchmark.py
+@@ -0,0 +1,114 @@
++"""Export four predictions at original image resolution, without CLIP at inference."""
++import argparse
++import json
++from pathlib import Path
++import cv2
++import numpy as np
++from PIL import Image
++import torch
++import torch.nn.functional as F
++from tqdm import tqdm
++from segment_anything import sam_model_registry
++from crss_dataset import resize_longest_and_pad, SAM_PIXEL_MEAN_RGB
++from crss_resolver_v2 import FeatureAwareReliabilityResolver
++from polyp_checkpoint import build_backbone, file_sha256
++from scripts.prepare_polyp1450 import TEST_COUNTS, paired
++
++
++def restore_logits(logits, height, width):
++    # Inverse of the training loader: longest side 1024, padding at bottom/right.
++    scale = 1024 / max(height, width)
++    nh, nw = int(round(height * scale)), int(round(width * scale))
++    full = F.interpolate(logits.float(), (1024, 1024), mode="bilinear", align_corners=False)
++    cropped = full[..., :nh, :nw]
++    restored = F.interpolate(cropped, (height, width), mode="bilinear", align_corners=False)
++    return restored.sigmoid()[0, 0].cpu().numpy()
++
++
++@torch.no_grad()
++def main():
++    ap = argparse.ArgumentParser(description=__doc__)
++    ap.add_argument("--test-root", default="dataset/TestDataset")
++    ap.add_argument("--sam_checkpoint", required=True)
++    ap.add_argument("--heads_checkpoint", required=True)
++    ap.add_argument("--resolver_checkpoint", required=True)
++    ap.add_argument("--output", default="experiments/polyp1450/predictions")
++    ap.add_argument("--device", default="cuda")
++    ap.add_argument("--max-images", type=int, default=0, help="Smoke only; positive values are not benchmark results")
++    args = ap.parse_args()
++    hck = torch.load(args.heads_checkpoint, map_location="cpu")
++    config = hck.get("args", {})
++    model_type = config.get("model_type", "vit_h")
++    sam = sam_model_registry[model_type](checkpoint=args.sam_checkpoint).to(args.device)
++    ext, heads, hck = build_backbone(sam, args.heads_checkpoint, args.device)
++    rck = torch.load(args.resolver_checkpoint, map_location="cpu")
++    if not args.max_images:
++        for label, checkpoint in [("heads", hck), ("resolver", rck)]:
++            settings = checkpoint.get("args", {})
++            if not settings.get("fixed_schedule") or settings.get("max_train_batches", 0) != 0:
++                raise RuntimeError(f"{label}: use a full fixed-schedule training checkpoint, or --max-images for a smoke export")
++            if checkpoint.get("epoch") != settings.get("epochs") or checkpoint.get("metrics", {}).get("train_images") != 1450:
++                raise RuntimeError(f"{label}: the complete fixed schedule on all 1450 images has not finished")
++    backbone_hash = file_sha256(args.heads_checkpoint)
++    if rck.get("backbone_sha256") != backbone_hash:
++        raise RuntimeError("Resolver checkpoint was not trained with this exact backbone checkpoint")
++    resolver = FeatureAwareReliabilityResolver(ext.mid_channels, ext.deep_channels, proj_channels=16, hidden=64).to(args.device)
++    resolver.load_state_dict(rck["resolver"], strict=True); resolver.eval()
++    output_size = int(rck.get("args", {}).get("out_size", 256))
++    output = Path(args.output)
++    if output.exists() and any(output.iterdir()):
++        raise RuntimeError(f"Use a fresh prediction output directory: {output}")
++    output.mkdir(parents=True, exist_ok=True)
++    methods = ["semantic", "structural", "naive_average", "resolver_v2"]
++    report = {"status": "incomplete", "provenance": "local_inference",
++              "heads_checkpoint_sha256": backbone_hash, "resolver_checkpoint_sha256": file_sha256(args.resolver_checkpoint),
++              "head_epoch": hck.get("epoch"), "resolver_epoch": rck.get("epoch"),
++              "smoke": args.max_images > 0, "native_prediction_size": output_size,
++              "published_maps": "original-size sigmoid, per-image min-max normalization, truncation to uint8 PNG",
++              "restoration": "native logits -> 1024 -> remove bottom/right pad -> original size -> sigmoid; mixed probabilities converted to logits before same restoration",
++              "raw_arrays": "un-normalized original-size float32 probabilities", "counts": {}}
++    (output / "export_manifest.json").write_text(json.dumps(report, indent=2))
++    for name, count in TEST_COUNTS.items():
++        images, masks = paired(Path(args.test_root) / name, count)
++        stems = sorted(images)[:args.max_images] if args.max_images else sorted(images)
++        raw_dir = output / "raw_probabilities" / name; raw_dir.mkdir(parents=True)
++        for method in methods:
++            (output / method / name).mkdir(parents=True)
++        for stem in tqdm(stems, desc=name):
++            image = cv2.imread(str(images[stem]), cv2.IMREAD_COLOR)
++            if image is None:
++                raise RuntimeError(f"Unreadable image: {images[stem]}")
++            h, w = image.shape[:2]
++            with Image.open(masks[stem]) as gt:
++                gt.load()
++                if gt.size != (w, h):
++                    raise RuntimeError(f"Ground-truth/image size mismatch: {stem}")
++            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
++            image = resize_longest_and_pad(image, 1024, image_pad_value=SAM_PIXEL_MEAN_RGB)
++            tensor = torch.from_numpy(image).permute(2, 0, 1).unsqueeze(0).to(args.device)
++            mid, deep = ext(tensor)
++            sem, structural = heads(mid, deep)
++            sem = F.interpolate(sem, (output_size, output_size), mode="bilinear", align_corners=False)
++            structural = F.interpolate(structural, (output_size, output_size), mode="bilinear", align_corners=False)
++            ps, pt = sem.sigmoid(), structural.sigmoid()
++            average = 0.5 * (ps + pt)
++            fused = resolver(ps, pt, mid, deep)["p_fused"]
++            logits = [sem, structural, torch.logit(average.clamp(1e-6, 1-1e-6)), torch.logit(fused.clamp(1e-6, 1-1e-6))]
++            arrays = {}
++            for method, prediction in zip(methods, logits):
++                probability = restore_logits(prediction, h, w).astype(np.float32)
++                if not np.isfinite(probability).all():
++                    raise RuntimeError(f"Non-finite probability: {name}/{stem}/{method}")
++                arrays[method] = probability
++                normalized = (probability - probability.min()) / (probability.max() - probability.min() + 1e-8)
++                Image.fromarray((normalized * 255).astype(np.uint8)).save(output / method / name / f"{stem}.png")
++            np.savez_compressed(raw_dir / f"{stem}.npz", **arrays)
++        report["counts"][name] = len(stems)
++        (output / "export_manifest.json").write_text(json.dumps(report, indent=2))
++    report["status"] = "smoke_complete" if args.max_images else "complete"
++    (output / "export_manifest.json").write_text(json.dumps(report, indent=2))
++    print(f"{report['status']}: {sum(report['counts'].values())} test images, four prediction variants")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/polyp_checkpoint.py b/polyp_checkpoint.py
+new file mode 100644
+index 0000000..16f9c85
+--- /dev/null
++++ b/polyp_checkpoint.py
+@@ -0,0 +1,47 @@
++"""Restore exactly the LoRA backbone associated with a dual-head checkpoint."""
++import hashlib
++import torch
++from crss_model import FrozenSAMFeatureExtractor, DualCueHeads
++from crss_model_lora import LoRASAMFeatureExtractor
++
++
++def file_sha256(path):
++    digest = hashlib.sha256()
++    with open(path, "rb") as stream:
++        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
++            digest.update(chunk)
++    return digest.hexdigest()
++
++
++def build_backbone(sam, checkpoint, device, default_mid=15):
++    ck = torch.load(checkpoint, map_location="cpu")
++    config = ck.get("args", {})
++    if int(config.get("image_size", 1024)) != 1024:
++        raise RuntimeError("This benchmark adapter requires SAM input size 1024")
++    mid = int(config.get("mid_block", default_mid))
++    if "lora" in ck:
++        start = config.get("lora_start_block")
++        ext = LoRASAMFeatureExtractor(
++            sam, mid_block=mid,
++            lora_start_block=mid + 1 if start is None else int(start),
++            rank=int(config.get("lora_rank", 4)),
++            alpha=float(config.get("lora_alpha", 4.0)),
++        ).to(device)
++        parameters = dict(ext.named_parameters())
++        expected = {name for name, value in parameters.items() if value.requires_grad}
++        if set(ck["lora"]) != expected:
++            raise RuntimeError("LoRA checkpoint does not contain exactly all required trainable tensors")
++        with torch.no_grad():
++            for name, value in ck["lora"].items():
++                if parameters[name].shape != value.shape:
++                    raise RuntimeError(f"LoRA shape mismatch: {name}")
++                parameters[name].copy_(value.to(parameters[name]))
++    else:
++        ext = FrozenSAMFeatureExtractor(sam, mid_block=mid).to(device)
++    heads = DualCueHeads(ext.mid_channels, ext.deep_channels).to(device)
++    heads.load_state_dict(ck["heads"], strict=True)
++    for module in (ext, heads):
++        module.eval()
++        for parameter in module.parameters():
++            parameter.requires_grad = False
++    return ext, heads, ck
+diff --git a/requirements_polyp_eval_python310.txt b/requirements_polyp_eval_python310.txt
+new file mode 100644
+index 0000000..249fa16
+--- /dev/null
++++ b/requirements_polyp_eval_python310.txt
+@@ -0,0 +1,7 @@
++numpy==1.26.4
++Pillow==10.4.0
++scipy==1.13.1
++scikit-image==0.25.2
++scikit-learn==1.5.2
++opencv-python-headless==4.10.0.84
++pysodmetrics==1.6.2
+diff --git a/scripts/generate_polyp_teacher.py b/scripts/generate_polyp_teacher.py
+new file mode 100644
+index 0000000..7d37919
+--- /dev/null
++++ b/scripts/generate_polyp_teacher.py
+@@ -0,0 +1,117 @@
++"""Run the existing BiomedCLIP/IBA teacher with fixed settings and lossless caches."""
++import argparse
++import hashlib
++import json
++from pathlib import Path
++import random
++import cv2
++import numpy as np
++from PIL import Image
++import torch
++from tqdm import tqdm
++from transformers import AutoModel, AutoProcessor, AutoTokenizer
++from scripts.methods import vision_heatmap_iba
++from scripts.generate_map import pad_to_square, unpad_square_from_resized_array
++from scripts.prepare_polyp1450 import index, decoded_hash
++
++
++def model_fingerprint(root):
++    digest = hashlib.sha256()
++    for path in sorted(root.rglob("*")):
++        if path.is_file() and path.suffix.lower() in {".json", ".py", ".bin", ".safetensors", ".txt", ".model"}:
++            digest.update(str(path.relative_to(root)).encode())
++            with path.open("rb") as stream:
++                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
++                    digest.update(chunk)
++    return digest.hexdigest()
++
++
++def main():
++    ap = argparse.ArgumentParser(description=__doc__)
++    ap.add_argument("--input-path", default="data/Polyp1450/train/images")
++    ap.add_argument("--output-path", default="data/Polyp1450/train/attribution_map")
++    ap.add_argument("--model-path", default="checkpoints/BiomedCLIP-vit-bert-hf")
++    ap.add_argument("--text", default="polyp")
++    ap.add_argument("--vbeta", type=float, default=0.1)
++    ap.add_argument("--vvar", type=float, default=0.1)
++    ap.add_argument("--vlayer", type=int, default=8)
++    ap.add_argument("--seed", type=int, default=123)
++    ap.add_argument("--device", default="cuda")
++    ap.add_argument("--max-images", type=int, default=0)
++    ap.add_argument("--overwrite", action="store_true")
++    args = ap.parse_args()
++    model_path = Path(args.model_path).resolve()
++    if not (model_path / "config.json").is_file():
++        ap.error(f"Local BiomedCLIP model not found: {model_path}")
++    images = index(args.input_path)
++    selected = sorted(images)
++    if args.max_images:
++        selected = selected[:args.max_images]
++    elif len(selected) != 1450:
++        ap.error(f"Expected 1450 images for a full run, got {len(selected)}")
++    if not selected:
++        ap.error("No images")
++    output = Path(args.output_path); output.mkdir(parents=True, exist_ok=True)
++    manifest_path = output / "teacher_generation.json"
++    config = {"model_path": str(model_path), "model_files_sha256": model_fingerprint(model_path),
++              "text": args.text, "vbeta": args.vbeta, "vvar": args.vvar, "vlayer": args.vlayer,
++              "seed": args.seed, "seed_mode": "per_image_stem_sha256", "format": "lossless_uint8_png",
++              "hyperparameter_search": False, "IBA_steps": 10, "IBA_lr": 1,
++              "input_root": str(Path(args.input_path).resolve()), "selected_count": len(selected)}
++    old = json.loads(manifest_path.read_text()) if manifest_path.exists() else None
++    cached = index(output)
++    if cached and not args.overwrite and (old is None or old.get("config") != config):
++        ap.error("Existing teacher cache has no matching provenance. Audit it separately, or use a fresh output directory.")
++    if set(cached) - set(selected):
++        ap.error("Output contains teacher maps outside the selected dataset")
++    manifest = {"config": config, "status": "incomplete", "completed": {} if old is None or args.overwrite else old.get("completed", {})}
++    manifest_path.write_text(json.dumps(manifest, indent=2))
++    torch.manual_seed(args.seed)
++    model = AutoModel.from_pretrained(str(model_path), trust_remote_code=True).to(args.device).eval()
++    # Keep the original CLIP fixed; IBA inserts its own trainable bottleneck.
++    for parameter in model.parameters():
++        parameter.requires_grad = False
++    processor = AutoProcessor.from_pretrained(str(model_path), trust_remote_code=True)
++    tokenizer = AutoTokenizer.from_pretrained(str(model_path), trust_remote_code=True)
++    text_ids = torch.tensor([tokenizer.encode(args.text, add_special_tokens=True)], device=args.device)
++    for stem in tqdm(selected, desc="Polyp teacher"):
++        source_hash = decoded_hash(images[stem])
++        with Image.open(images[stem]) as source:
++            original = source.convert("RGB")
++        destination = output / f"{stem}.png"
++        completed = manifest["completed"].get(stem)
++        if not args.overwrite and destination.is_file() and completed and completed.get("rgb_sha256") == source_hash:
++            with Image.open(destination) as cached_map:
++                cached_map.load(); values = np.asarray(cached_map.convert("L"))
++                if cached_map.size == original.size and values.max() > values.min() and hashlib.sha256(destination.read_bytes()).hexdigest() == completed.get("map_sha256"):
++                    continue
++        seed = (args.seed + int(hashlib.sha256(stem.encode()).hexdigest()[:8], 16)) % (2**32)
++        random.seed(seed); np.random.seed(seed); torch.manual_seed(seed)
++        torch.cuda.manual_seed_all(seed)
++        square = pad_to_square(original, fill_color=(0, 0, 0))
++        pixels = processor(images=square, return_tensors="pt")["pixel_values"].to(args.device)
++        values = vision_heatmap_iba(text_ids, pixels, model, args.vlayer, args.vbeta, args.vvar,
++                                   device=args.device, ensemble=False, progbar=False)
++        values = np.asarray(values, dtype=np.float32)
++        if not np.isfinite(values).all() or values.max() <= values.min():
++            raise RuntimeError(f"Non-finite or constant teacher output: {stem}")
++        values = cv2.resize(values, square.size, interpolation=cv2.INTER_NEAREST)
++        values = unpad_square_from_resized_array(values, original.width, original.height, square.width)
++        encoded = np.rint(np.clip(values, 0, 1) * 255).astype(np.uint8)
++        if encoded.max() == encoded.min():
++            raise RuntimeError(f"Constant teacher after crop/encoding: {stem}")
++        temporary = destination.with_suffix(".tmp.png")
++        Image.fromarray(encoded).save(temporary)
++        temporary.replace(destination)
++        # Never accumulate gradients on the fixed teacher between images.
++        model.zero_grad(set_to_none=True)
++        manifest["completed"][stem] = {"rgb_sha256": source_hash, "seed": seed,
++                                       "map_sha256": hashlib.sha256(destination.read_bytes()).hexdigest()}
++        manifest_path.write_text(json.dumps(manifest, indent=2))
++    manifest["status"] = "complete"
++    manifest_path.write_text(json.dumps(manifest, indent=2))
++    print(f"COMPLETE: {len(selected)} teacher maps at {output}")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/scripts/prepare_polyp1450.py b/scripts/prepare_polyp1450.py
+new file mode 100644
+index 0000000..1e655da
+--- /dev/null
++++ b/scripts/prepare_polyp1450.py
+@@ -0,0 +1,132 @@
++"""Prepare or audit the canonical 1450/798 split. Does not resplit or edit data."""
++import argparse
++import hashlib
++import json
++from pathlib import Path
++from PIL import Image
++import numpy as np
++
++EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
++TEST_COUNTS = {"Kvasir": 100, "CVC-ClinicDB": 62, "CVC-ColonDB": 380,
++               "ETIS-LaribPolypDB": 196, "CVC-300": 60}
++
++
++def index(folder):
++    entries = {}
++    for path in sorted(Path(folder).iterdir()):
++        if path.is_file() and not path.name.startswith(".") and path.suffix.lower() in EXTENSIONS:
++            if path.stem in entries:
++                raise RuntimeError(f"Duplicate stem: {path}")
++            entries[path.stem] = path
++    return entries
++
++
++def folder(root, names):
++    found = [Path(root) / name for name in names if (Path(root) / name).is_dir()]
++    if len(found) != 1:
++        raise RuntimeError(f"Expected exactly one of {names} in {root}; found {found}")
++    return found[0]
++
++
++def paired(root, count):
++    images = index(folder(root, ["images", "image"]))
++    masks = index(folder(root, ["masks", "labels"]))
++    if set(images) != set(masks) or len(images) != count:
++        raise RuntimeError(f"Invalid pairs at {root}: images={len(images)}, masks={len(masks)}, expected={count}")
++    return images, masks
++
++
++def decoded_hash(path):
++    with Image.open(path) as image:
++        image = image.convert("RGB")
++        return hashlib.sha256(str(image.size).encode() + image.tobytes()).hexdigest()
++
++
++def check_pairs(root, count, teacher=False):
++    images, masks = paired(root, count)
++    maps = index(Path(root) / "attribution_map") if teacher else {}
++    if teacher and set(maps) != set(images):
++        missing = sorted(set(images) - set(maps))
++        raise RuntimeError(f"Incomplete teacher maps: {len(maps)}/{count}; missing={missing[:8]}")
++    records = []
++    for stem in sorted(images):
++        with Image.open(images[stem]) as image, Image.open(masks[stem]) as mask:
++            image.load(); mask.load()
++            if image.size != mask.size:
++                raise RuntimeError(f"Image/mask dimension mismatch: {stem}")
++            size = image.size
++            if not (np.asarray(mask.convert("L")) > 127).any():
++                raise RuntimeError(f"Empty polyp ground truth: {stem}")
++        if teacher:
++            with Image.open(maps[stem]) as attribution:
++                attribution.load()
++                values = np.asarray(attribution.convert("L"))
++                if attribution.size != size or values.max() == values.min():
++                    raise RuntimeError(f"Wrong-sized or constant teacher map: {maps[stem]}")
++        records.append({"stem": stem, "image": str(images[stem].resolve()),
++                        "mask": str(masks[stem].resolve()), "size": size,
++                        "rgb_sha256": decoded_hash(images[stem])})
++    return records
++
++
++def link_directory(target, source):
++    if target.is_symlink():
++        if target.resolve() != source.resolve():
++            raise RuntimeError(f"Existing symlink points elsewhere: {target}")
++    elif target.exists():
++        # Existing data are left in place; callers validate their contents separately.
++        return
++    else:
++        target.symlink_to(source.resolve(), target_is_directory=True)
++
++
++def main():
++    ap = argparse.ArgumentParser(description=__doc__)
++    ap.add_argument("--source", default="dataset/TrainDataset")
++    ap.add_argument("--train-root", default="data/Polyp1450/train")
++    ap.add_argument("--test-root")
++    ap.add_argument("--require-teacher", action="store_true")
++    ap.add_argument("--audit-only", action="store_true")
++    ap.add_argument("--output", default="experiments/polyp1450/data_audit.json")
++    args = ap.parse_args()
++    train_root = Path(args.train_root)
++    if not args.audit_only:
++        source = Path(args.source)
++        source_images, source_masks = paired(source, 1450)
++        train_root.mkdir(parents=True, exist_ok=True)
++        link_directory(train_root / "images", folder(source, ["images", "image"]))
++        link_directory(train_root / "labels", folder(source, ["masks", "labels"]))
++        for name in ["attribution_map", "attribution_overlay"]:
++            (train_root / name).mkdir(exist_ok=True)
++        dst_images, dst_masks = paired(train_root, 1450)
++        for original, linked in [(source_images, dst_images), (source_masks, dst_masks)]:
++            for stem in original:
++                if original[stem].read_bytes() != linked[stem].read_bytes():
++                    raise RuntimeError(f"Existing destination differs from canonical source: {stem}")
++    train = check_pairs(train_root, 1450, args.require_teacher)
++    clinic = sum(record["stem"].isdigit() for record in train)
++    if clinic != 550:
++        raise RuntimeError(f"Expected 550 numeric ClinicDB stems, got {clinic}")
++    report = {"status": "PASS", "train_count": len(train), "Kvasir_train": 900,
++              "ClinicDB_train": 550, "teacher_checked": args.require_teacher,
++              "train": train, "test": {}, "exact_train_test_overlap": None}
++    if args.test_root:
++        train_hashes = {record["rgb_sha256"] for record in train}
++        overlap = []
++        for name, count in TEST_COUNTS.items():
++            records = check_pairs(Path(args.test_root) / name, count)
++            report["test"][name] = records
++            overlap.extend(f"{name}/{record['stem']}" for record in records if record["rgb_sha256"] in train_hashes)
++        if overlap:
++            raise RuntimeError(f"Train/test decoded-RGB overlap: {overlap[:8]}")
++        report["exact_train_test_overlap"] = 0
++    out = Path(args.output); out.parent.mkdir(parents=True, exist_ok=True)
++    out.write_text(json.dumps(report, ensure_ascii=False, indent=2))
++    print(f"PASS: train=1450 (Kvasir=900, ClinicDB=550), teacher_checked={args.require_teacher}")
++    if args.test_root:
++        print("PASS: test=798, exact train/test overlap=0")
++    print(f"Audit: {out}")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/scripts/run_polyp1450.sh b/scripts/run_polyp1450.sh
+new file mode 100644
+index 0000000..1889674
+--- /dev/null
++++ b/scripts/run_polyp1450.sh
+@@ -0,0 +1,84 @@
++#!/usr/bin/env bash
++set -euo pipefail
++cd "$(dirname "${BASH_SOURCE[0]}")/.."
++export CUDA_VISIBLE_DEVICES="${GPU:-0}"
++train_root="${POLYP_TRAIN_ROOT:-data/Polyp1450/train}"
++test_root="${POLYP_TEST_ROOT:-dataset/TestDataset}"
++source_root="${POLYP_SOURCE_ROOT:-dataset/TrainDataset}"
++sam_checkpoint="${SAM_CHECKPOINT:-/home/prml/StudentsWork/Jihoon/CRSS-SAM/checkpoints/sam_vit_h_4b8939.pth}"
++teacher_model="${BIOMEDCLIP_MODEL:-checkpoints/BiomedCLIP-vit-bert-hf}"
++work="${POLYP_WORK_ROOT:-experiments/polyp1450/seed123}"
++stage="${1:-}"
++mkdir -p "$work/logs"
++audit_teacher() {
++    python -m scripts.prepare_polyp1450 --audit-only --train-root "$train_root" --require-teacher --output "$work/data_audit.json"
++}
++train_heads() {
++    local directory="$1" epochs="$2" max_batches="$3"
++    python -u train_crss_lora.py --train_root "$train_root" --sam_checkpoint "$sam_checkpoint" \
++      --work_dir "$directory" --fixed_schedule --expected_train_count 1450 \
++      --epochs "$epochs" --batch_size 1 --accumulation_steps 2 --lr 3e-4 \
++      --mid_block 15 --lora_start_block 16 --lora_rank 4 --lora_alpha 4 \
++      --teacher_refine_v2 --affinity_temperature 0.1 --teacher_weight 0.5 \
++      --seed 123 --num_workers 4 --max_train_batches "$max_batches"
++}
++train_resolver() {
++    local directory="$1" backbone="$2" epochs="$3" max_batches="$4"
++    python -u train_resolver_v2.py --train_root "$train_root" --sam_checkpoint "$sam_checkpoint" \
++      --heads_checkpoint "$backbone" --work_dir "$directory" --fixed_schedule \
++      --expected_train_count 1450 --epochs "$epochs" --batch_size 1 --accumulation_steps 2 \
++      --lr 1e-3 --seed 123 --num_workers 4 --max_train_batches "$max_batches"
++}
++case "$stage" in
++  prepare)
++    python -m scripts.prepare_polyp1450 --source "$source_root" --train-root "$train_root" --output "$work/data_audit.json"
++    ;;
++  teacher-smoke)
++    python -u -m scripts.generate_polyp_teacher --input-path "$train_root/images" \
++      --output-path "$work/teacher_smoke" --model-path "$teacher_model" --max-images 3 \
++      2>&1 | tee "$work/logs/teacher_smoke.log"
++    ;;
++  teacher)
++    python -u -m scripts.generate_polyp_teacher --input-path "$train_root/images" \
++      --output-path "$train_root/attribution_map" --model-path "$teacher_model" \
++      2>&1 | tee "$work/logs/teacher_full.log"
++    audit_teacher
++    ;;
++  audit)
++    audit_teacher
++    ;;
++  smoke)
++    audit_teacher
++    train_heads "$work/smoke_heads" 1 2 2>&1 | tee "$work/logs/heads_smoke.log"
++    train_resolver "$work/smoke_resolver" "$work/smoke_heads/latest.pth" 1 2 2>&1 | tee "$work/logs/resolver_smoke.log"
++    ;;
++  train)
++    audit_teacher
++    train_heads "$work/heads60" 60 0 2>&1 | tee "$work/logs/heads60.log"
++    train_resolver "$work/resolver40" "$work/heads60/latest.pth" 40 0 2>&1 | tee "$work/logs/resolver40.log"
++    ;;
++  train-heads)
++    audit_teacher
++    train_heads "$work/heads60" 60 0 2>&1 | tee "$work/logs/heads60.log"
++    ;;
++  train-resolver)
++    train_resolver "$work/resolver40" "$work/heads60/latest.pth" 40 0 2>&1 | tee "$work/logs/resolver40.log"
++    ;;
++  export)
++    python -m scripts.prepare_polyp1450 --audit-only --train-root "$train_root" --test-root "$test_root" --output "$work/train_test_audit.json"
++    python -u export_polyp_benchmark.py --test-root "$test_root" --sam_checkpoint "$sam_checkpoint" \
++      --heads_checkpoint "$work/heads60/latest.pth" --resolver_checkpoint "$work/resolver40/latest.pth" \
++      --output "$work/predictions" 2>&1 | tee "$work/logs/export.log"
++    ;;
++  evaluate)
++    for method in semantic structural naive_average resolver_v2; do
++      python evaluate_polyp_masks.py --pred-root "$work/predictions/$method" --gt-root "$test_root" \
++        --method "CRSS_$method" --provenance local_inference --output "$work/metrics/$method" \
++        --raw-root "$work/predictions/raw_probabilities" --raw-key "$method"
++    done
++    ;;
++  *)
++    echo "Usage: GPU=0 bash scripts/run_polyp1450.sh {prepare|teacher-smoke|teacher|audit|smoke|train|train-heads|train-resolver|export|evaluate}" >&2
++    exit 2
++    ;;
++esac
+diff --git a/train_crss_lora.py b/train_crss_lora.py
+index 54bf90d..9bdaa0b 100644
+--- a/train_crss_lora.py
++++ b/train_crss_lora.py
+@@ -115,7 +115,9 @@ def main():
+     ap = argparse.ArgumentParser()
+ 
+     ap.add_argument("--train_root", required=True)
+-    ap.add_argument("--val_root", required=True)
++    ap.add_argument("--val_root")
++    ap.add_argument("--fixed_schedule", action="store_true")
++    ap.add_argument("--expected_train_count", type=int, default=0)
+     ap.add_argument("--sam_checkpoint", required=True)
+ 
+     ap.add_argument(
+@@ -169,9 +171,16 @@ def main():
+ 
+     # 메모리가 부족할 경우 사용
+     ap.add_argument("--amp", action="store_true")
++    ap.add_argument("--teacher_refine_v2", action="store_true")
++    ap.add_argument("--affinity_temperature", type=float, default=0.1)
++    ap.add_argument("--teacher_weight", type=float, default=0.5)
+ 
+     args = ap.parse_args()
+ 
++    if not args.fixed_schedule and not args.val_root:
++        ap.error("--val_root is required unless --fixed_schedule is used")
++    if args.fixed_schedule and args.val_root:
++        ap.error("Do not supply validation/test data in fixed-schedule mode")
+     seed_all(args.seed)
+ 
+     work = Path(args.work_dir)
+@@ -187,10 +196,10 @@ def main():
+         augment=True,
+     )
+ 
+-    va = KvasirTeacherDataset(
+-        args.val_root,
+-        args.image_size,
+-        augment=False,
++    if args.expected_train_count and len(tr) != args.expected_train_count:
++        raise RuntimeError(f"Expected {args.expected_train_count} training images, got {len(tr)}")
++    va = None if args.fixed_schedule else KvasirTeacherDataset(
++        args.val_root, args.image_size, augment=False, require_teacher=False,
+     )
+ 
+     trl = DataLoader(
+@@ -201,7 +210,7 @@ def main():
+         pin_memory=True,
+     )
+ 
+-    val = DataLoader(
++    val = None if va is None else DataLoader(
+         va,
+         batch_size=args.batch_size,
+         shuffle=False,
+@@ -312,6 +321,10 @@ def main():
+         enabled=args.amp
+     )
+ 
++    from crss_teacher_refine_v2 import SAMAffinityTeacherRefiner
++    refiner = SAMAffinityTeacherRefiner(
++        temperature=args.affinity_temperature, teacher_weight=args.teacher_weight,
++    ) if args.teacher_refine_v2 else None
+     best = -1.0
+     history = []
+ 
+@@ -390,6 +403,9 @@ def main():
+                     align_corners=False,
+                 ).clamp(0, 1)
+ 
++                if refiner is not None:
++                    teacher_s, _ = refiner(deep.detach(), teacher, output_size=(args.loss_size, args.loss_size))
++
+                 # ------------------------------
+                 # E0와 동일한 loss
+                 # ------------------------------
+@@ -461,16 +477,15 @@ def main():
+         # Validation
+         # --------------------------------------------------
+ 
+-        m = validate(
+-            ext,
+-            heads,
+-            val,
+-            args.device,
+-            args.loss_size,
++        m = {} if args.fixed_schedule else validate(
++            ext, heads, val, args.device, args.loss_size,
+             max_batches=args.max_val_batches,
+         )
+ 
+         m["epoch"] = epoch
++        m["train_images"] = len(tr)
++        m["train_batches"] = step
++        m["selection"] = "fixed_final_epoch" if args.fixed_schedule else "validation"
+         m["train_loss"] = float(
+             np.mean(losses)
+         )
+@@ -485,9 +500,8 @@ def main():
+         )
+ 
+         # E0와 동일한 best criterion
+-        score = 0.5 * (
+-            m["semantic_dice"]
+-            + m["structural_dice"]
++        score = None if args.fixed_schedule else 0.5 * (
++            m["semantic_dice"] + m["structural_dice"]
+         )
+ 
+         ck = {
+@@ -508,7 +522,7 @@ def main():
+             work / "latest.pth",
+         )
+ 
+-        if score > best:
++        if score is not None and score > best:
+             best = score
+ 
+             torch.save(
+diff --git a/train_resolver_v2.py b/train_resolver_v2.py
+index 461d757..fbf9cdb 100644
+--- a/train_resolver_v2.py
++++ b/train_resolver_v2.py
+@@ -162,7 +162,10 @@ def validate(ext, heads, resolver, loader, device, out_size, tau):
+ def main():
+     ap = argparse.ArgumentParser()
+     ap.add_argument("--train_root", required=True)
+-    ap.add_argument("--val_root", required=True)
++    ap.add_argument("--val_root")
++    ap.add_argument("--fixed_schedule", action="store_true")
++    ap.add_argument("--expected_train_count", type=int, default=0)
++    ap.add_argument("--max_train_batches", type=int, default=0)
+     ap.add_argument("--sam_checkpoint", required=True)
+     ap.add_argument("--heads_checkpoint", required=True)
+ 
+@@ -190,22 +193,28 @@ def main():
+     ap.add_argument("--device", default="cuda")
+     args = ap.parse_args()
+ 
++    if not args.fixed_schedule and not args.val_root:
++        ap.error("--val_root is required unless --fixed_schedule is used")
++    if args.fixed_schedule and args.val_root:
++        ap.error("Do not supply validation/test data in fixed-schedule mode")
+     seed_all(args.seed)
+     work = Path(args.work_dir)
+     work.mkdir(parents=True, exist_ok=True)
+ 
+     tr = KvasirTeacherDataset(
+-        args.train_root, image_size=1024, augment=True
++        args.train_root, image_size=1024, augment=True, require_teacher=False
+     )
+-    va = KvasirTeacherDataset(
+-        args.val_root, image_size=1024, augment=False
++    if args.expected_train_count and len(tr) != args.expected_train_count:
++        raise RuntimeError(f"Expected {args.expected_train_count} training images, got {len(tr)}")
++    va = None if args.fixed_schedule else KvasirTeacherDataset(
++        args.val_root, image_size=1024, augment=False, require_teacher=False
+     )
+ 
+     tr_loader = DataLoader(
+         tr, batch_size=args.batch_size, shuffle=True,
+         num_workers=args.num_workers, pin_memory=True
+     )
+-    va_loader = DataLoader(
++    va_loader = None if va is None else DataLoader(
+         va, batch_size=args.batch_size, shuffle=False,
+         num_workers=args.num_workers, pin_memory=True
+     )
+@@ -214,15 +223,8 @@ def main():
+         checkpoint=args.sam_checkpoint
+     ).to(args.device)
+ 
+-    ext = FrozenSAMFeatureExtractor(
+-        sam, mid_block=args.mid_block
+-    ).to(args.device)
+-
+-    heads = DualCueHeads(
+-        ext.mid_channels, ext.deep_channels
+-    ).to(args.device)
+-    hck = torch.load(args.heads_checkpoint, map_location="cpu")
+-    heads.load_state_dict(hck["heads"])
++    from polyp_checkpoint import build_backbone
++    ext, heads, hck = build_backbone(sam, args.heads_checkpoint, args.device, args.mid_block)
+     heads.eval()
+     for p in heads.parameters():
+         p.requires_grad = False
+@@ -311,6 +313,7 @@ def main():
+             if (
+                 step % args.accumulation_steps == 0
+                 or step == len(tr_loader)
++                or (args.max_train_batches > 0 and step >= args.max_train_batches)
+             ):
+                 opt.step()
+                 opt.zero_grad(set_to_none=True)
+@@ -325,13 +328,17 @@ def main():
+                 fuse=f"{np.mean(fuse_losses[-20:]):.4f}",
+             )
+ 
+-        metrics = validate(
+-            ext, heads, resolver,
+-            va_loader, args.device,
+-            args.out_size, args.tau
++            if args.max_train_batches > 0 and step >= args.max_train_batches:
++                break
++
++        metrics = {} if args.fixed_schedule else validate(
++            ext, heads, resolver, va_loader, args.device, args.out_size, args.tau
+         )
+ 
+         metrics["epoch"] = epoch
++        metrics["train_images"] = len(tr)
++        metrics["train_batches"] = step
++        metrics["selection"] = "fixed_final_epoch" if args.fixed_schedule else "validation"
+         metrics["train_loss"] = float(np.mean(losses))
+         metrics["train_rel_loss"] = float(np.mean(rel_losses))
+         metrics["train_fuse_loss"] = float(np.mean(fuse_losses))
+@@ -341,6 +348,7 @@ def main():
+ 
+         ckpt = {
+             "resolver": resolver.state_dict(),
++            "backbone_sha256": __import__("polyp_checkpoint").file_sha256(args.heads_checkpoint),
+             "args": vars(args),
+             "epoch": epoch,
+             "metrics": metrics,
+@@ -348,7 +356,7 @@ def main():
+ 
+         torch.save(ckpt, work/"latest.pth")
+ 
+-        if metrics["resolver_v2_fused_dice"] > best:
++        if not args.fixed_schedule and metrics["resolver_v2_fused_dice"] > best:
+             best = metrics["resolver_v2_fused_dice"]
+             torch.save(ckpt, work/"best.pth")
+             print(f"[best] resolver_v2_fused_dice = {best:.6f}")

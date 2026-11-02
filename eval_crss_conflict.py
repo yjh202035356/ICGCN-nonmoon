@@ -1,5 +1,6 @@
 import argparse
 import json
+import cv2
 from pathlib import Path
 
 import numpy as np
@@ -142,11 +143,30 @@ def main():
         default=None,
     )
 
+    ap.add_argument(
+        "--save_dir",
+        default=None,
+        help="Directory for saving semantic and CRSS prediction masks.",
+    )
+
     args = ap.parse_args()
 
     device = torch.device(
         args.device
     )
+
+    if args.save_dir is not None:
+        save_root = Path(args.save_dir)
+
+        semantic_save_dir = save_root / "semantic"
+        structural_save_dir = save_root / "structural"
+        conflict_save_dir = save_root / "conflict"
+        crss_save_dir = save_root / "crss"
+
+        semantic_save_dir.mkdir(parents=True, exist_ok=True)
+        structural_save_dir.mkdir(parents=True, exist_ok=True)
+        conflict_save_dir.mkdir(parents=True, exist_ok=True)
+        crss_save_dir.mkdir(parents=True, exist_ok=True)
 
     # ==================================================
     # Load interaction checkpoint
@@ -463,6 +483,7 @@ def main():
                 device,
                 non_blocking=True,
             )
+            stem = b["name"][0]
 
             # ==========================================
             # Frozen Full-LoRA backbone
@@ -665,6 +686,160 @@ def main():
             final_pred = (
                 pf >= 0.5
             )
+
+            # ==========================================
+            # Save predictions for qualitative results
+            # ==========================================
+
+            if args.save_dir is not None:
+
+                sem_np = (
+                    sem_pred[0, 0]
+                    .detach()
+                    .cpu()
+                    .numpy()
+                    .astype(np.uint8)
+                    * 255
+                )
+
+                final_np = (
+                    final_pred[0, 0]
+                    .detach()
+                    .cpu()
+                    .numpy()
+                    .astype(np.uint8)
+                    * 255
+                )
+
+                # ---------------------------------------------------------
+                # Semantic prediction
+                # ---------------------------------------------------------
+
+                cv2.imwrite(
+                    str(
+                        semantic_save_dir
+                        / f"{stem}.png"
+                    ),
+                    sem_np,
+                )
+
+
+                # ---------------------------------------------------------
+                # Structural prediction
+                # ---------------------------------------------------------
+
+                str_np = (
+                    str_pred[0, 0]
+                    .detach()
+                    .cpu()
+                    .numpy()
+                    .astype(np.uint8)
+                    * 255
+                )
+
+                cv2.imwrite(
+                    str(
+                        structural_save_dir
+                        / f"{stem}.png"
+                    ),
+                    str_np,
+                )
+
+
+                # ---------------------------------------------------------
+                # Final CRSS prediction
+                # ---------------------------------------------------------
+
+                cv2.imwrite(
+                    str(
+                        crss_save_dir
+                        / f"{stem}.png"
+                    ),
+                    final_np,
+                )
+
+
+                # ---------------------------------------------------------
+                # Conflict Map visualization
+                # C = |P_sem - P_str|
+                # ---------------------------------------------------------
+
+                conflict_256 = F.interpolate(
+                    out["conflict"].float(),
+                    size=(args.eval_size, args.eval_size),
+                    mode="bilinear",
+                    align_corners=False,
+                )
+
+                conflict_np = (
+                    conflict_256[0, 0]
+                    .detach()
+                    .cpu()
+                    .numpy()
+                )
+
+                conflict_u8 = (
+                    np.clip(
+                        conflict_np,
+                        0.0,
+                        1.0,
+                    )
+                    * 255
+                ).astype(np.uint8)
+
+                # Low conflict = blue
+                # High conflict = red/yellow
+                conflict_vis = cv2.applyColorMap(
+                    conflict_u8,
+                    cv2.COLORMAP_TURBO,
+                )
+
+
+                # ---------------------------------------------------------
+                # Top-K selected regions
+                # White contour = regions actually selected for refinement
+                # ---------------------------------------------------------
+
+                topk_256 = F.interpolate(
+                    out["conflict_mask"].float(),
+                    size=(args.eval_size, args.eval_size),
+                    mode="nearest",
+                )
+
+                topk_np = (
+                    topk_256[0, 0]
+                    .detach()
+                    .cpu()
+                    .numpy()
+                )
+
+                topk_u8 = (
+                    (topk_np > 0.5)
+                    .astype(np.uint8)
+                    * 255
+                )
+
+                topk_contours, _ = cv2.findContours(
+                    topk_u8,
+                    cv2.RETR_EXTERNAL,
+                    cv2.CHAIN_APPROX_SIMPLE,
+                )
+
+                cv2.drawContours(
+                    conflict_vis,
+                    topk_contours,
+                    -1,
+                    (255, 255, 255),
+                    1,
+                )
+
+                cv2.imwrite(
+                    str(
+                        conflict_save_dir
+                        / f"{stem}.png"
+                    ),
+                    conflict_vis,
+                )
 
             sem_wrong = (
                 sem_pred != gt_bin

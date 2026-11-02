@@ -1,0 +1,21 @@
+{
+  "status": "PASS",
+  "source_commit": "ebe9ccaee6c96b5c23a311c14dde3f3222bfee52",
+  "torch": "2.4.0+cpu",
+  "device": "CPU",
+  "checks": [
+    "Official PVT ImageNet release SHA and exact full-backbone loading",
+    "Official multi-scale backward: three optimizer steps, finite weights, epoch-50 test access forbidden",
+    "Five prediction shapes at all production scale sizes and native-aspect PNG/raw export",
+    "Atomic model/optimizer/RNG checkpoint roundtrip",
+    "Valid pairing accepted; mismatched and duplicate stems rejected"
+  ],
+  "limitations": [
+    "No GPU or full 100-epoch training performed here; server smoke tests intended batch 16"
+  ],
+  "pretrained_sha256": "80711cd1b37ffba12bec6c7a2a7c54efe2315ed635e6d2055fd51c3e909ede4d",
+  "additional_checks": [
+    "Bash syntax",
+    "Python 3.10 syntax"
+  ]
+}

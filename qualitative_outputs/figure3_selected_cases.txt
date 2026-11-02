@@ -1,0 +1,3 @@
+Improvement: cju33belnbyhm0878yxl42233 | Simple=0.4738, PSF=0.8901, Semantic=0.8936, CRSS=0.9290, CRSS-Semantic=+0.0355
+Typical: cju42dwedlmk60871jbgu4ehi | Simple=0.9741, PSF=0.9763, Semantic=0.9780, CRSS=0.9784, CRSS-Semantic=+0.0005
+Failure: cju1dg44i4z3w0801nyz4p6zf | Simple=0.0610, PSF=0.0678, Semantic=0.4909, CRSS=0.3778, CRSS-Semantic=-0.1130

@@ -1,0 +1,12 @@
+{
+  "syntax_python310": "PASS",
+  "bash_syntax": "PASS",
+  "pair_guards": [
+    "valid pairs",
+    "mismatched stems",
+    "duplicate stems",
+    "unsupported extension"
+  ],
+  "actual_GPU_execution": "not run; check server logs",
+  "source_commit": "01598e5e9912ffb23f965ecbebf4d1dfecbaa56e"
+}
