@@ -1,0 +1,95 @@
+{
+  "status": "complete",
+  "protocol": "Original-size sigmoid p>=0.5; per-case Dice/IoU and equal 5-dataset macro mean",
+  "scope": "Exploratory; test set previously inspected for method decisions; not independent final validation",
+  "method": "original_conflict_b15_frozen_plus_learned_attenuation_gate",
+  "gate_checkpoint": "experiments/polyp1450/seed123/reliability_gate_20ep/latest.pth",
+  "baseline_semantic_reproduction_max_abs_difference": 0.0,
+  "baseline_conflict_reproduction_max_abs_difference": 0.0,
+  "pooled_pixel_counts": {
+    "original_recovered_vs_sem": 404561,
+    "original_damaged_vs_sem": 437059,
+    "gate_recovered_vs_sem": 397407,
+    "gate_damaged_vs_sem": 414761
+  },
+  "results": [
+    {
+      "dataset": "Kvasir",
+      "n": 100,
+      "semantic_dice": 0.9225237435021731,
+      "semantic_iou": 0.8715677855520686,
+      "resolver_dice": 0.9174011086467143,
+      "resolver_iou": 0.8650799873873234,
+      "original_conflict_dice": 0.9215477542497409,
+      "original_conflict_iou": 0.8704643885389766,
+      "reliability_gate_dice": 0.9215680049982781,
+      "reliability_gate_iou": 0.8705092395157246,
+      "gate_selected_mean": 0.9881531925714394
+    },
+    {
+      "dataset": "CVC-ClinicDB",
+      "n": 62,
+      "semantic_dice": 0.8612522469084885,
+      "semantic_iou": 0.8061410420566204,
+      "resolver_dice": 0.8631286368471133,
+      "resolver_iou": 0.8069994480564531,
+      "original_conflict_dice": 0.8643142135262661,
+      "original_conflict_iou": 0.8095238085894685,
+      "reliability_gate_dice": 0.8643160060347587,
+      "reliability_gate_iou": 0.8095722994246025,
+      "gate_selected_mean": 0.9921373490213887
+    },
+    {
+      "dataset": "CVC-ColonDB",
+      "n": 380,
+      "semantic_dice": 0.7759262105662122,
+      "semantic_iou": 0.7017105262404372,
+      "resolver_dice": 0.7796972095649007,
+      "resolver_iou": 0.7024764768550724,
+      "original_conflict_dice": 0.7767280480770781,
+      "original_conflict_iou": 0.7030334695887681,
+      "reliability_gate_dice": 0.7768023140254994,
+      "reliability_gate_iou": 0.7031103675910174,
+      "gate_selected_mean": 0.9896038241466797
+    },
+    {
+      "dataset": "ETIS-LaribPolypDB",
+      "n": 196,
+      "semantic_dice": 0.7802449844292851,
+      "semantic_iou": 0.7000096953835865,
+      "resolver_dice": 0.7472785728802728,
+      "resolver_iou": 0.6623583496622936,
+      "original_conflict_dice": 0.7768747132069005,
+      "original_conflict_iou": 0.6964033310061851,
+      "reliability_gate_dice": 0.7771816321145507,
+      "reliability_gate_iou": 0.696713054099881,
+      "gate_selected_mean": 0.9915588079684449
+    },
+    {
+      "dataset": "CVC-300",
+      "n": 60,
+      "semantic_dice": 0.8836890323323673,
+      "semantic_iou": 0.816672382586598,
+      "resolver_dice": 0.8881773124396546,
+      "resolver_iou": 0.8214557528171699,
+      "original_conflict_dice": 0.886275819474603,
+      "original_conflict_iou": 0.821604041035883,
+      "reliability_gate_dice": 0.8863215631636305,
+      "reliability_gate_iou": 0.8216367783101184,
+      "gate_selected_mean": 0.9944127748919972
+    },
+    {
+      "dataset": "MACRO_5",
+      "n": 798,
+      "semantic_dice": 0.8447272435477053,
+      "semantic_iou": 0.7792202863638622,
+      "resolver_dice": 0.839136568075731,
+      "resolver_iou": 0.7716740029556625,
+      "original_conflict_dice": 0.8451481097069177,
+      "original_conflict_iou": 0.7802058077518563,
+      "reliability_gate_dice": 0.8452379040673434,
+      "reliability_gate_iou": 0.7803083477882687,
+      "gate_selected_mean": 0.9904606277287511
+    }
+  ]
+}
